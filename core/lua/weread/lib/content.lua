@@ -784,6 +784,12 @@ end
 -- ORIGINAL string coordinates { orig_start, orig_end (exclusive), orig_len,
 -- new_len }, so raw-HTML annotation ranges can be mapped onto the rewritten
 -- document (see weread.lib.canonical).
+-- Public wrapper: extract body fragment(s) from a full XHTML document
+-- (used by Canonical's export-time annotation injection).
+function Content.extract_body_fragment(xhtml)
+    return body_fragment(xhtml)
+end
+
 function Content.rewrite_image_sources(xhtml, src_map)
     if not src_map or not next(src_map) then
         return xhtml, {}

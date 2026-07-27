@@ -11,12 +11,13 @@ local content_stub = {
         local assets = {
             { href = "images/pic1.png", data = "PNG-DATA-1", media_type = "image/png" },
         }
-        -- 模拟 finalize 的图片改写：远程 URL -> images/pic1.png
-        local rewritten = xhtml:gsub('src="https://mmbiz.qpic.cn/pic1.png"', 'src="images/pic1.png"')
+        -- 按真实坐标模拟 finalize 的图片改写:远程 URL -> images/pic1.png
+        local s, e = xhtml:find('src="https://mmbiz.qpic.cn/pic1.png"', 1, true)
+        local replacement = 'src="images/pic1.png"'
         local edits = {
-            -- src="https://mmbiz.qpic.cn/pic1.png" 在原文的字节区间 [19, 60)
-            { orig_start = 19, orig_end = 60, orig_len = 41, new_len = 21 },
+            { orig_start = s, orig_end = e + 1, orig_len = e - s + 1, new_len = #replacement },
         }
+        local rewritten = xhtml:sub(1, s - 1) .. replacement .. xhtml:sub(e + 1)
         return rewritten, assets, edits
     end,
     book_cache_dir = function(settings, book_id)
@@ -137,6 +138,70 @@ ok(py:close() and out_text:find("export zip OK", 1, true) ~= nil, "python zip va
 local doc2, tm2 = Canonical.get_chapter_document(settings, book, chapter)
 ok(doc2 == doc, "document round-trip")
 eq(tm2.schema, 1, "textmap round-trip")
+
+-- 7. map_range: rune-index ranges map through the edit chain.
+do
+    -- raw 中「正文」位于 rune 51-52;canonical 中 URL 变长,位置随 edits 平移
+    local range = Canonical.map_range(raw_chapter, doc:match("<body>(.*)</body>"),
+        textmap.edit_chain, "51-53")
+    local canonical_fragment = doc:match("<body>(.*)</body>")
+    -- 独立验证:直接在 canonical fragment 中数 rune 位置
+    local pos = 0
+    local rune_count = 0
+    local target_start
+    while pos < #canonical_fragment do
+        local b = canonical_fragment:byte(pos + 1)
+        local len = b < 0x80 and 1 or b < 0xE0 and 2 or b < 0xF0 and 3 or 4
+        local ch = canonical_fragment:sub(pos + 1, pos + len)
+        if ch == "正" and not target_start then
+            target_start = rune_count
+        end
+        rune_count = rune_count + 1
+        pos = pos + len
+    end
+    eq(range, tostring(target_start) .. "-" .. tostring(target_start + 2),
+        "range maps to actual canonical rune position of 正文")
+    -- 覆盖图片 URL 内部的 range 会被钳制,但不返回 nil
+    local clamped = Canonical.map_range(raw_chapter, canonical_fragment,
+        textmap.edit_chain, "20-30")
+    ok(clamped ~= nil, "in-span range clamps without error: " .. tostring(clamped))
+end
+
+-- 8. export with annotations="footnote" injects underlines via mapped ranges.
+do
+    -- 手写 annotations 文件:划线覆盖「正文」(raw rune 51-52)
+    os.execute("mkdir -p " .. ROOT .. "/cache/canonical/b1/annotations")
+    local json = require("weread.lib.json")
+    local payload = {
+        underlines_data = {
+            chapterUid = 11,
+            underlines = {
+                { range = "51-53", markText = "正文" },
+            },
+        },
+        reviews = {},
+    }
+    local af = io.open(ROOT .. "/cache/canonical/b1/annotations/11.json", "w")
+    af:write(json.encode(payload))
+    af:close()
+
+    local out2 = ROOT .. "/out-annotated.epub"
+    local ok2, err2 = pcall(function()
+        return Canonical.export_epub(settings, book, { chapter }, out2, { annotations = "footnote" })
+    end)
+    eq(ok2, true, "annotated export succeeded: " .. tostring(err2))
+    local py2 = io.popen([=[python3 -c "
+import zipfile
+z = zipfile.ZipFile(']=] .. out2 .. [=[')
+chapter = z.read('OEBPS/text/chapter-001.xhtml').decode()
+assert 'wr-underline' in chapter, chapter[:600]
+assert '正文</span>' in chapter, chapter[:600]
+print('annotated export OK')
+"]=], "r")
+    local out2_text = py2:read("a")
+    ok(py2:close() and out2_text:find("annotated export OK", 1, true) ~= nil,
+        "annotation injection in exported epub: " .. tostring(out2_text))
+end
 
 os.execute("rm -rf " .. ROOT)
 print(string.format("canonical_spec: %d checks, %d failure(s)", checks, failures))
