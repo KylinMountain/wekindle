@@ -1,6 +1,6 @@
 -- Unit tests for weread/lib/book_reviews.lua.
--- Run from the repo root with a plain Lua interpreter:
---   lua spec/book_reviews_spec.lua
+-- Run via the monorepo test runner (injects LUA_PATH):
+--   tests/run_all.sh
 
 package.path = "./?.lua;" .. package.path
 local BookReviews = require("weread.lib.book_reviews")

@@ -1,6 +1,6 @@
 -- Unit tests for weread/lib/scan.lua (local-cache scanner).
--- Run from the repo root with a plain Lua interpreter:
---   lua spec/scan_spec.lua
+-- Run via the monorepo test runner (injects LUA_PATH):
+--   tests/run_all.sh
 
 package.path = "./?.lua;" .. package.path
 local Scan = require("weread.lib.scan")

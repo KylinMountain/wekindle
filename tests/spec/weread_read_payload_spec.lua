@@ -1,6 +1,6 @@
 -- Focused tests for Web Reader enter/report payload shape.
--- Run from the repo root with:
---   lua spec/weread_read_payload_spec.lua
+-- Run via the monorepo test runner (injects LUA_PATH):
+--   tests/run_all.sh
 
 package.path = "./?.lua;" .. package.path
 local has_bit = pcall(require, "bit")

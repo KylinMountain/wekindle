@@ -4,3 +4,4 @@ cache/
 secrets/
 *.log
 /tmp/
+dist/

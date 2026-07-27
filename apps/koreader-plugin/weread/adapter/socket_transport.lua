@@ -25,10 +25,14 @@ end
 function SocketTransport:roundtrip(req)
     local body = req.body
     local headers = {}
+    local has_content_length = false
     for key, value in pairs(req.headers or {}) do
+        if tostring(key):lower() == "content-length" then
+            has_content_length = true
+        end
         headers[key] = value
     end
-    if body then
+    if body and not has_content_length then
         headers["Content-Length"] = tostring(#body)
     end
 
@@ -58,7 +62,9 @@ function SocketTransport:roundtrip(req)
     if not results[1] then
         error(results[2])
     end
-    local raw_code, resp_headers, status = results[2], results[3], results[4]
+    -- LuaSocket with a sink returns 1, code, headers, status on success:
+    -- results[2] is the literal 1 and must be discarded.
+    local _, raw_code, resp_headers, status = results[2], results[3], results[4], results[5]
     if status == nil and type(raw_code) == "string" then
         status = raw_code
     end

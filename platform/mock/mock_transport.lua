@@ -7,11 +7,16 @@ local MockTransport = {}
 MockTransport.__index = MockTransport
 
 function MockTransport:new(routes)
-    return setmetatable({
+    local self = setmetatable({
         routes = routes or {},
         requests = {},
         sleeps = {},
-    }, self)
+    }, MockTransport)
+    -- bound per-instance so client code can call it as a plain function
+    self.sleep = function(seconds)
+        self.sleeps[#self.sleeps + 1] = seconds
+    end
+    return self
 end
 
 function MockTransport:roundtrip(req)
@@ -26,8 +31,6 @@ function MockTransport:roundtrip(req)
     end
     error("MockTransport: no route for " .. tostring(req.method) .. " " .. tostring(req.url))
 end
-
-function MockTransport.sleep() end
 
 function MockTransport:last_request()
     return self.requests[#self.requests]

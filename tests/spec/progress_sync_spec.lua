@@ -1,6 +1,6 @@
 -- Unit tests for weread/lib/progress_sync.lua.
--- Run from the repo root with:
---   lua spec/progress_sync_spec.lua
+-- Run via the monorepo test runner (injects LUA_PATH):
+--   tests/run_all.sh
 
 package.path = "./?.lua;" .. package.path
 local ProgressSync = require("weread.lib.progress_sync")

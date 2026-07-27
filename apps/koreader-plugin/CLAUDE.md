@@ -49,6 +49,15 @@ weread/ui/thought_popup.lua   Native underline/thought TextViewer with previous/
 
 - Keep every project-owned Lua module under the `weread/` namespace directory.
 - Put non-UI modules in `weread/lib/` and load them with `require("weread.lib.<module>")`.
+  Note: most former `weread/lib/*` modules now live in the monorepo's
+  `core/lua/weread/lib/` (weread-core) and are resolved via the package.path
+  bootstrap in `main.lua`; only KOReader-coupled shells remain here
+  (downloader, settings, qr_login, reader_lifecycle, plugin_util, mixin,
+  migrations, i18n). New platform-independent logic goes into weread-core,
+  not into this directory.
+- Put KOReader port adapters (implementations of the interfaces in
+  `core/contracts/ports.md`) in `weread/adapter/` and load them with
+  `require("weread.adapter.<module>")` — e.g. `weread.adapter.socket_transport`.
 - Put UI and presentation modules in `weread/ui/` and load them with `require("weread.ui.<module>")`.
 - Do not add project-owned modules under root-level `lib/` or `ui/`, and do not use bare `lib.*` or `ui.*` module keys. KOReader-owned imports such as `require("ui/widget/menu")` are not affected.
 - Keep only KOReader plugin entry files such as `main.lua` and `_meta.lua` at the plugin root.

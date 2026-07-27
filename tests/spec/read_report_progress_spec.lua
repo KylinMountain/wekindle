@@ -1,6 +1,6 @@
 -- Focused tests for ReadReport's progress gate and enter/report sequencing.
--- Run from the repo root with:
---   lua spec/read_report_progress_spec.lua
+-- Run via the monorepo test runner (injects LUA_PATH):
+--   tests/run_all.sh
 
 package.path = "./?.lua;" .. package.path
 

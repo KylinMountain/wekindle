@@ -1,6 +1,6 @@
 -- Unit tests for weread/lib/position_mapper.lua.
--- Run from the repo root with:
---   lua spec/position_mapper_spec.lua
+-- Run via the monorepo test runner (injects LUA_PATH):
+--   tests/run_all.sh
 
 package.path = "./?.lua;" .. package.path
 local Mapper = require("weread.lib.position_mapper")

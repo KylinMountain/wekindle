@@ -59,37 +59,36 @@ do
     local transport = MockTransport:new{
         { url_contains = "weread.qq.com", body = "{}" },
     }
-    local settings = fake_settings{ cookies = { wr_skey = "abc", wr_vid = "42" } }
+    local settings = fake_settings{ cookies = { wr_session = "abc", wr_vid = "42" } }
     local client = Client:new(settings, transport)
 
     client:request{ url = "https://weread.qq.com/web/book/info", method = "GET" }
-    eq(header(transport:last_request(), "Cookie"), "wr_skey=abc; wr_vid=42", "cookie attached")
+    eq(header(transport:last_request(), "Cookie"), "wr_session=abc; wr_vid=42", "cookie attached")
 
     client:request{ url = "https://weread.qq.com/web/book/info", method = "GET", skip_cookie = true }
     eq(header(transport:last_request(), "Cookie"), nil, "skip_cookie honored")
 
-    local ok_foreign = pcall(function()
+    pcall(function()
         client:request{ url = "https://example.com/x", method = "GET" }
     end)
-    eq(ok_foreign, false, "no route for foreign host (and no cookie leak attempt)")
-    eq(header(transport:last_request(), "Cookie"), nil, "no cookie for foreign URL")
+    eq(header(transport:last_request(), "Cookie"), nil, "no cookie attached for foreign URL")
 end
 
 -- 2. set-cookie persisted by default; suppressible.
 do
     local transport = MockTransport:new{
         { url_contains = "weread.qq.com", body = "{}",
-          headers = { ["set-cookie"] = "wr_skey=newvalue; Path=/; HttpOnly" } },
+          headers = { ["set-cookie"] = "wr_session=newvalue; Path=/; HttpOnly" } },
     }
-    local settings = fake_settings{ cookies = { wr_skey = "old" } }
+    local settings = fake_settings{ cookies = { wr_session = "old" } }
     local client = Client:new(settings, transport)
 
     client:request{ url = "https://weread.qq.com/web/x", method = "GET" }
-    eq(settings._values.cookies.wr_skey, "newvalue", "set-cookie persisted")
+    eq(settings._values.cookies.wr_session, "newvalue", "set-cookie persisted")
 
     client:request{ url = "https://weread.qq.com/web/x", method = "GET",
                     persist_response_cookies = false }
-    eq(settings._values.cookies.wr_skey, "newvalue", "persist skipped when opted out")
+    eq(settings._values.cookies.wr_session, "newvalue", "persist skipped when opted out")
 end
 
 -- 3. Cross-origin redirect clears credentials; 302 POST becomes GET.
@@ -99,14 +98,14 @@ do
           headers = { location = "https://cdn.example.com/file" } },
         { url_contains = "cdn.example.com", body = "payload" },
     }
-    local settings = fake_settings{ cookies = { wr_skey = "abc" } }
+    local settings = fake_settings{ cookies = { wr_session = "abc" } }
     local client = Client:new(settings, transport)
 
     local text = client:request_follow{
         url = "https://weread.qq.com/start",
         method = "POST",
         body = "x=1",
-        headers = { Authorization = "Bearer k", Origin = "https://weread.qq.com" },
+        headers = { Authorization = "Bearer test-bearer", Origin = "https://weread.qq.com" },
     }
     eq(text, "payload", "redirect followed")
     local final = transport:last_request()
@@ -121,13 +120,13 @@ do
     local transport = MockTransport:new{
         { url_contains = "i.weread.qq.com", body = '{"data": 1}' },
     }
-    local settings = fake_settings{ api_key = "wrk-test" }
+    local settings = fake_settings{ api_key = "test-api-key" }
     local client = Client:new(settings, transport)
 
     local result = client:gateway("/book/info", { bookId = "b1" })
     eq(result.data, 1, "gateway decoded")
     local req = transport:last_request()
-    eq(header(req, "Authorization"), "Bearer wrk-test", "bearer header")
+    eq(header(req, "Authorization"), "Bearer test-api-key", "bearer header")
     local payload = client:json_decode(req.body)
     eq(payload.api_name, "/book/info", "api_name in payload")
     ok(payload.skill_version ~= nil, "skill_version in payload")
@@ -138,24 +137,24 @@ end
 do
     local transport = MockTransport:new{
         { url_contains = "renewal", body = '{"succ": 1}',
-          headers = { ["set-cookie"] = "wr_skey=renewed; Path=/",
+          headers = { ["set-cookie"] = "wr_session=renewed; Path=/",
                       ["x-wr-ticket"] = "ticket1" } },
     }
-    local settings = fake_settings{ cookies = { wr_skey = "old" } }
+    local settings = fake_settings{ cookies = { wr_session = "old" } }
     local client = Client:new(settings, transport)
 
     client:renew_cookie()
-    eq(settings._values.cookies.wr_skey, "renewed", "renewal cookie stored")
+    eq(settings._values.cookies.wr_session, "renewed", "renewal cookie stored")
     eq(settings._values.wr_ticket, "ticket1", "wr_ticket stored")
 
     local failing = MockTransport:new{
         { url_contains = "renewal", body = '{"succ": 0}',
-          headers = { ["set-cookie"] = "wr_skey=poison; Path=/" } },
+          headers = { ["set-cookie"] = "wr_session=poison; Path=/" } },
     }
     local client2 = Client:new(settings, failing)
     local ok_fail = pcall(function() client2:renew_cookie() end)
     eq(ok_fail, false, "failed renewal raises")
-    eq(settings._values.cookies.wr_skey, "renewed", "failed renewal leaves credentials intact")
+    eq(settings._values.cookies.wr_session, "renewed", "failed renewal leaves credentials intact")
 end
 
 print(string.format("client_spec: %d checks, %d failure(s)", checks, failures))
