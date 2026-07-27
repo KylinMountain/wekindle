@@ -1,0 +1,6 @@
+.DS_Store
+*.epub
+cache/
+secrets/
+*.log
+/tmp/
