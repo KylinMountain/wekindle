@@ -1,6 +1,6 @@
 local Annotations = require("weread.lib.annotations")
 
-local ok_logger, logger = pcall(require, "logger")
+local ok_logger, logger = pcall(require, "weread.lib.log")
 if not ok_logger then
     logger = nil
 end

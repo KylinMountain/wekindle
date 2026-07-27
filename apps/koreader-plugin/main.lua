@@ -17,6 +17,7 @@ local UIManager = require("ui/uimanager")
 local WidgetContainer = require("ui/widget/container/widgetcontainer")
 
 local Client = require("weread.lib.client")
+local SocketTransport = require("weread.adapter.socket_transport")
 local Downloader = require("weread.lib.downloader")
 local Mixin = require("weread.lib.mixin")
 local Migrations = require("weread.lib.migrations")
@@ -39,7 +40,7 @@ local WeReadPlugin = WidgetContainer:extend{
 function WeReadPlugin:init()
     math.randomseed(os.time())
     self.settings = Settings:new()
-    self.client = Client:new(self.settings)
+    self.client = Client:new(self.settings, SocketTransport:new())
     self.downloader = Downloader:new{
         client = self.client,
         settings = self.settings,

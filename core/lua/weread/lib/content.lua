@@ -3,7 +3,7 @@ local ReaderState = require("weread.lib.reader_state")
 local WeRead = require("weread.lib.protocol")
 local Thoughts = require("weread.lib.thoughts")
 local bit = require("bit")
-local ok_logger, logger = pcall(require, "logger")
+local ok_logger, logger = pcall(require, "weread.lib.log")
 if not ok_logger then
     logger = nil
 end
@@ -249,9 +249,30 @@ local function write_file(path, data)
     file:close()
 end
 
+-- ZIP writer port (see core/contracts/ports.md, IArchiver). Platforms inject
+-- a factory via Content.set_zip_writer_factory; inside KOReader the fallback
+-- resolves ffi/archiver directly. The writer must guarantee the EPUB
+-- invariant: `mimetype` is the first entry and stored uncompressed.
+local zip_writer_factory = nil
+
+function Content.set_zip_writer_factory(factory)
+    zip_writer_factory = factory
+end
+
+local function new_zip_writer()
+    if zip_writer_factory then
+        return zip_writer_factory()
+    end
+    local ok, Archiver = pcall(require, "ffi/archiver")
+    if ok and Archiver and Archiver.Writer then
+        return Archiver.Writer:new{}
+    end
+    error("weread.lib.content: no ZIP writer available " ..
+          "(inject one via Content.set_zip_writer_factory)")
+end
+
 local function write_epub(path, entries)
-    local Archiver = require("ffi/archiver")
-    local archive = Archiver.Writer:new{}
+    local archive = new_zip_writer()
     if not archive:open(path, "epub") then
         error("failed to open archive for writing: " .. tostring(archive.err))
     end

@@ -1,7 +1,7 @@
 local Content = require("weread.lib.content")
 local WeRead = require("weread.lib.protocol")
 
-local ok_logger, logger = pcall(require, "logger")
+local ok_logger, logger = pcall(require, "weread.lib.log")
 if not ok_logger then
     logger = nil
 end

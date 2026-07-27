@@ -1,15 +1,12 @@
-local ltn12 = require("ltn12")
-local socketutil = require("socketutil")
-local http = require("socket.http")
 local Cookie = require("weread.lib.cookie")
 local WeRead = require("weread.lib.protocol")
+local json = require("weread.lib.json")
 
-local ok_json, json = pcall(require, "json")
-if not ok_json then
-    ok_json, json = pcall(require, "rapidjson")
-end
+-- weread-core API client. Transport is injected (IHttpClient port, see
+-- core/contracts/ports.md): this module owns business logic only — cookie
+-- attachment/persistence, redirect credential scoping, gateway auth —
+-- and never touches a socket directly.
 
-local DEFAULT_TIMEOUT_SECONDS = 15
 local Client = {}
 Client.__index = Client
 
@@ -143,16 +140,14 @@ local function clear_cross_origin_headers(headers)
     end
 end
 
-function Client:new(settings)
+function Client:new(settings, transport)
     return setmetatable({
         settings = settings,
+        transport = transport,
     }, self)
 end
 
 function Client:json_encode(data)
-    if not ok_json then
-        error("JSON module is not available")
-    end
     if json.encode then
         return json.encode(data)
     end
@@ -160,9 +155,6 @@ function Client:json_encode(data)
 end
 
 function Client:json_decode(text)
-    if not ok_json then
-        error("JSON module is not available")
-    end
     if json.decode then
         return json.decode(text)
     end
@@ -171,8 +163,6 @@ end
 
 function Client:request(opts)
     opts = opts or {}
-    local body = opts.body
-    local response
     local headers = {
         ["User-Agent"] = WeRead.USER_AGENT,
         ["Accept"] = "application/json, text/plain, */*"
@@ -182,51 +172,23 @@ function Client:request(opts)
     if is_handle_cookie then
         local cookies = self.settings:get("cookies", {})
         local cookie_header = Cookie.to_header(cookies)
-        if cookie_header ~= "" then 
-            headers["Cookie"] = cookie_header 
+        if cookie_header ~= "" then
+            headers["Cookie"] = cookie_header
         end
     end
 
-    if body then
-        headers["Content-Length"] = tostring(#body)
+    local req_opts = merge_req_opts({ headers = headers }, opts)
+    if not self.transport or type(self.transport.roundtrip) ~= "function" then
+        error("weread.lib.client: no transport injected (IHttpClient port required)")
     end
-    local block_timeout = DEFAULT_TIMEOUT_SECONDS
-    local total_timeout = -1
-    if type(opts.timeout) == "table" and opts.timeout[1] then
-        block_timeout = opts.timeout[1]
-        total_timeout = opts.timeout[2] or block_timeout
-    elseif type(opts.timeout) == "number" then
-        block_timeout = opts.timeout
-    end
-    socketutil:set_timeout(block_timeout, total_timeout)
+    local response, raw_code, resp_headers, status = self.transport:roundtrip({
+        url = req_opts.url,
+        method = req_opts.method or (req_opts.body and "POST" or "GET"),
+        headers = req_opts.headers,
+        body = req_opts.body,
+        timeout = req_opts.timeout,
+    })
 
-    local sink_to_use = opts.sink
-    if not sink_to_use then
-        response = {}
-        sink_to_use = socketutil.table_sink(response)
-    end
-
-    local req_opts = merge_req_opts({
-        method = body and "POST" or "GET",
-        source = body and ltn12.source.string(body) or nil,
-        sink = sink_to_use,
-        headers = headers,
-    }, opts)
-    -- Redirects are handled explicitly by request_follow so credentials can be
-    -- rebuilt for every destination instead of being copied across origins.
-    req_opts.redirect = false
-
-    local results = { pcall(http.request, req_opts) }
-    socketutil:reset_timeout()
-    if not results[1] then
-        error(results[2])
-    end
-    local _, raw_code, resp_headers, status = results[2], results[3], results[4], results[5]
-    if status == nil and type(raw_code) == "string" then
-        status = raw_code
-    end
-
-    if not opts.sink then response = table.concat(response) end
     if is_handle_cookie and opts.persist_response_cookies ~= false then
         local set_cookie = header_value(resp_headers, "set-cookie")
         if set_cookie then
@@ -234,7 +196,7 @@ function Client:request(opts)
         end
     end
 
-    return response, tonumber(raw_code), resp_headers or {}, status
+    return response, raw_code, resp_headers or {}, status
 end
 
 function Client:request_follow(opts, max_redirects)
@@ -597,7 +559,7 @@ function Client:get_chapter_reviews(book_id, chapter_uid, ranges)
 
     local all_reviews = {}
     local batches = self:build_chapter_review_batches(ranges)
-    local socket_ok, socket = pcall(require, "socket")
+    local sleep = self.transport and self.transport.sleep or nil
 
     for batch_index, batch in ipairs(batches) do
         local ok, result = self:get_chapter_reviews_batch(book_id, chapter_uid, batch)
@@ -607,8 +569,8 @@ function Client:get_chapter_reviews(book_id, chapter_uid, ranges)
             end
         end
 
-        if batch_index < #batches and socket_ok and socket.sleep then
-            socket.sleep(0.3)
+        if batch_index < #batches and sleep then
+            sleep(0.3)
         end
     end
 
