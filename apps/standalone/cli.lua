@@ -60,7 +60,9 @@ usage: cli.lua <command> [args]
   bookinfo <book_id>           book metadata
   progress <book_id>           remote reading progress
   chapters <book_id>           table of contents (web catalog)
-  download <book_id> [uid]     download book (or single chapter) to EPUB]])
+  download <book_id> [uid]     download book (or single chapter) to EPUB
+  cache <book_id> [uid]        fetch chapters into the Canonical Cache
+  export <book_id> [output]    pack cached chapters into an EPUB]])
     os.exit(command == nil and 0 or 1)
 end
 
@@ -160,6 +162,47 @@ function commands.download(book_id, chapter_uid)
         print("download failed: " .. tostring(done_value))
         os.exit(1)
     end
+end
+
+function commands.cache(book_id, chapter_uid)
+    assert(book_id, "book_id required")
+    local Canonical = require("weread.lib.canonical")
+    local book = load_book(book_id)
+    local chapters = Content.fetch_catalog(app.client, book)
+    Canonical.write_metadata(app.settings, book)
+    Canonical.write_catalog(app.settings, book, chapters)
+    local cached = 0
+    for _i, ch in ipairs(chapters) do
+        if chapter_uid and tostring(ch.chapterUid) ~= tostring(chapter_uid) then
+            goto continue
+        end
+        local ok, err = pcall(function()
+            Canonical.ensure_chapter(app.client, app.settings, book, ch, {})
+        end)
+        if ok then
+            cached = cached + 1
+            io.stdout:write(string.format("\27[Kcached %d/%d: %s\r", cached, #chapters, tostring(ch.title)))
+        else
+            print("\nchapter " .. tostring(ch.chapterUid) .. " failed: " .. tostring(err))
+        end
+        ::continue::
+    end
+    print(string.format("\ncached %d chapter(s) into canonical store", cached))
+end
+
+function commands.export(book_id, output)
+    assert(book_id, "book_id required")
+    local Canonical = require("weread.lib.canonical")
+    local book = load_book(book_id)
+    local chapters = Content.fetch_catalog(app.client, book)
+    output = output or ((app.settings:get_download_dir()) .. "/" ..
+        tostring(book.title or book_id) .. ".epub")
+    local path, err = Canonical.export_epub(app.settings, book, chapters, output, {})
+    if not path then
+        print("export failed: " .. tostring(err))
+        os.exit(1)
+    end
+    print("exported: " .. path)
 end
 
 if not command or not commands[command] then

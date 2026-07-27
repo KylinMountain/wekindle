@@ -299,6 +299,12 @@ local function write_epub(path, entries)
     archive:close()
 end
 
+-- Public archive writer for callers that assemble their own entries
+-- (e.g. weread.lib.canonical's EPUB exporter).
+function Content.write_epub_archive(path, entries)
+    write_epub(path, entries)
+end
+
 local function xml_escape(value)
     value = tostring(value or "")
     value = value:gsub("&", "&amp;")
@@ -640,13 +646,13 @@ function Content.save_chapter_epub(settings, book, chapter, xhtml, assets, css)
     return path
 end
 
-function Content.save_book_epub(settings, book, chapters, chapter_bodies, suffix, assets, css, cover_data)
+-- Pure EPUB assembly: builds the ZIP entry list for a full book EPUB from
+-- in-memory chapter bodies and assets. No filesystem access — callers decide
+-- where entries come from (download pipeline or Canonical Cache) and how the
+-- archive is written.
+function Content.build_book_epub_entries(book, chapters, chapter_bodies, suffix, assets, css, cover_data)
     local book_id = book.book_id or book.bookId
-    local dir = Content.book_resolved_dir(settings, book_id, book)
-    os.execute("mkdir -p " .. string.format("%q", dir))
-    book.cache_dir = dir
     local book_title = book.title or "WeRead"
-    local path = dir .. "/" .. filename_safe(book_title .. " - " .. (suffix or "book")) .. ".epub"
     local author = book.author or "WeRead"
     local manifest_items = {
         [[<item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/>]],
@@ -757,25 +763,59 @@ function Content.save_book_epub(settings, book, chapters, chapter_bodies, suffix
     table.insert(entries, { name = "OEBPS/nav.xhtml", data = nav })
     table.insert(entries, { name = "OEBPS/toc.ncx", data = ncx })
     table.insert(entries, { name = "OEBPS/style.css", data = css })
+    return entries
+end
+
+function Content.save_book_epub(settings, book, chapters, chapter_bodies, suffix, assets, css, cover_data)
+    local book_id = book.book_id or book.bookId
+    local dir = Content.book_resolved_dir(settings, book_id, book)
+    os.execute("mkdir -p " .. string.format("%q", dir))
+    book.cache_dir = dir
+    local book_title = book.title or "WeRead"
+    local path = dir .. "/" .. filename_safe(book_title .. " - " .. (suffix or "book")) .. ".epub"
+    local entries = Content.build_book_epub_entries(
+        book, chapters, chapter_bodies, suffix, assets, css, cover_data)
     write_epub(path, entries)
     return path
 end
 
+-- Rewrite remote image src attributes to local hrefs. Returns the rewritten
+-- document plus an edit list for offset mapping: each edit is recorded in
+-- ORIGINAL string coordinates { orig_start, orig_end (exclusive), orig_len,
+-- new_len }, so raw-HTML annotation ranges can be mapped onto the rewritten
+-- document (see weread.lib.canonical).
 function Content.rewrite_image_sources(xhtml, src_map)
     if not src_map or not next(src_map) then
-        return xhtml
+        return xhtml, {}
     end
-    local function replace_src(quote, src)
+    local out = {}
+    local edits = {}
+    local pos = 1
+    while true do
+        local s, e, quote, src = xhtml:find("src=(['\"])(.-)%1", pos)
+        if not s then
+            break
+        end
         local clean = tostring(src or ""):gsub("&amp;", "&")
         local key = basename(clean:match("^[^%?#]+") or clean)
         local href = src_map[key]
+        table.insert(out, xhtml:sub(pos, s - 1))
         if href then
-            return "src=" .. quote .. href .. quote
+            local replacement = "src=" .. quote .. href .. quote
+            table.insert(out, replacement)
+            edits[#edits + 1] = {
+                orig_start = s,
+                orig_end = e + 1,
+                orig_len = e - s + 1,
+                new_len = #replacement,
+            }
+        else
+            table.insert(out, xhtml:sub(s, e))
         end
-        return "src=" .. quote .. src .. quote
+        pos = e + 1
     end
-    xhtml = xhtml:gsub("src=(['\"])(.-)%1", replace_src)
-    return xhtml
+    table.insert(out, xhtml:sub(pos))
+    return table.concat(out), edits
 end
 
 function Content.download_remote_images(client, xhtml, used_names, progress)
@@ -1093,6 +1133,7 @@ end
 function Content.finalize_single_chapter_content(client, settings, book, chapter, xhtml, state)
     state = state or {}
     local chapter_assets = {}
+    local edits = {}
     local cache = settings:get("cache", {})
     if cache.download_book_images then
         state.used_asset_names = state.used_asset_names or {}
@@ -1100,14 +1141,14 @@ function Content.finalize_single_chapter_content(client, settings, book, chapter
         for _, asset in ipairs(tar_assets) do
             table.insert(chapter_assets, asset)
         end
-        xhtml = Content.rewrite_image_sources(xhtml, src_map)
+        xhtml, edits = Content.rewrite_image_sources(xhtml, src_map)
         local inline_xhtml, inline_assets = Content.download_remote_images(client, xhtml, state.used_asset_names)
         xhtml = inline_xhtml
         for _, asset in ipairs(inline_assets) do
             table.insert(chapter_assets, asset)
         end
     end
-    return xhtml, chapter_assets
+    return xhtml, chapter_assets, edits
 end
 
 function Content.fetch_chapters_epub(client, settings, book, chapters, options)
