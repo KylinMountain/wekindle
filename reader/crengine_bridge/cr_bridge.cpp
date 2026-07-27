@@ -78,16 +78,23 @@ int cr_page_count(void) {
 }
 
 // Text content of one page (1-based page index). Returns bytes written
-// (excluding NUL), or -1 on error. buf may be null to query the size.
+// (excluding NUL), -1 on error, -2 on out-of-range page. buf may be null
+// to query the size.
 int cr_page_text(int page, char *buf, int buf_len) {
     if (!g_doc) {
         return -1;
+    }
+    if (page < 1 || page > g_doc->view->getPageCount()) {
+        return -2;
     }
     lString32 text = g_doc->view->getPageText(false, page - 1);
     lString8 utf8 = UnicodeToUtf8(text);
     int len = (int)utf8.length();
     if (!buf) {
         return len;
+    }
+    if (buf_len <= 0) {
+        return -1;
     }
     int copy = len < buf_len - 1 ? len : buf_len - 1;
     if (copy > 0) {

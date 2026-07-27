@@ -151,6 +151,7 @@ end
 function M.login(client, settings, sleep_fn)
     io.stdout:setvbuf("line")  -- QR/prompt must appear even when piped
     local ctx = M.begin_login(client)
+    ctx.sleep_fn = sleep_fn
 
     -- 3. display the QR code
     print("\n用微信扫描下面的二维码登录微信读书：\n")

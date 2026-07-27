@@ -14,7 +14,7 @@ static void crash_handler(int sig) {
 
 extern "C" {
 int cr_init(const char *font_dir);
-int cr_open(const char *path, int width, int height, int font_size);
+int cr_open(const char *path, int width, int height, int font_size, const char *font_face);
 int cr_page_count(void);
 int cr_page_text(int page, char *buf, int buf_len);
 int cr_render_page(int page, unsigned char *gray_buf, int width, int height);

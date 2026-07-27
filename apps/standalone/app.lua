@@ -39,7 +39,11 @@ local state = {
     cbs = {},
 }
 
-local app = bootstrap.init()
+if SELFTEST then
+    -- never touch the real ~/.wereader in selftest runs
+    os.execute("rm -rf /tmp/wereader-selftest")
+end
+local app = bootstrap.init(SELFTEST and { data_dir = "/tmp/wereader-selftest" } or nil)
 
 -- ---------------------------------------------------------------- helpers
 
@@ -73,7 +77,8 @@ local function render_qr_canvas(parent, url)
     local matrix = QR.encode_to_matrix(url)
     local size = #matrix
     local scale = 6
-    local canvas_size = size * scale
+    local quiet = 4  -- QR spec: 4-module quiet zone, or scanners struggle
+    local canvas_size = (size + quiet * 2) * scale
     local buf = ffi.new("unsigned char[?]", canvas_size * canvas_size)
     ffi.fill(buf, canvas_size * canvas_size, 255)
     for r = 1, size do
@@ -81,8 +86,8 @@ local function render_qr_canvas(parent, url)
             if matrix[r][c] == 1 then
                 for dr = 0, scale - 1 do
                     for dc = 0, scale - 1 do
-                        buf[(r - 1) * scale * canvas_size + dr * canvas_size
-                            + (c - 1) * scale + dc] = 0
+                        buf[((r - 1 + quiet) * scale + dr) * canvas_size
+                            + (c - 1 + quiet) * scale + dc] = 0
                     end
                 end
             end
@@ -98,6 +103,7 @@ end
 local function show_login()
     local scr = L.lv_screen_active()
     L.lv_obj_clean(scr)
+    state.cbs = {}
     state.screen = "login"
     label(scr, "用微信扫码登录微信读书", state.cjk_font)
     L.lv_obj_align(L.lv_obj_get_child(scr, 0), lv.ALIGN_TOP_MID, 0, 8)
@@ -131,22 +137,68 @@ local function login_tick()
         state.login_step = "poll"
     elseif state.login_step == "poll" then
         local Login = require("login")
-        local done, result = Login.poll_once(app.client, state.login_ctx)
+        local done, result = Login.poll_once(app.client, state.login_ctx, state.otp)
         if done == "success" then
-            local account = Login.complete(app.client, app.settings, state.login_ctx, result)
-            state.account = account
-            state.screen = "shelf"
-            show_shelf()
+            local ok, account_or_err = pcall(function()
+                return Login.complete(app.client, app.settings, state.login_ctx, result)
+            end)
+            if ok then
+                state.account = account_or_err
+                state.screen = "shelf"
+                show_shelf()
+            else
+                state.login_err = tostring(account_or_err)
+                state.login_step = "error"
+            end
+        elseif done == "need_otp" or done == "otp_mismatch" then
+            state.login_step = "otp"
+            state.otp_hint = done == "otp_mismatch"
+                and "验证码不正确，请重新输入"
+                or "请输入微信读书 App 中显示的 4 位验证码"
+            show_otp_input()
         elseif done == "expired" or done == "error" then
-            state.login_err = tostring(result)
+            state.login_err = done == "expired" and "二维码已过期" or tostring(result)
             state.login_step = "error"
         end
         -- "pending": keep polling on the next tick
+    elseif state.login_step == "otp" then
+        -- waiting for the user to submit the code via the on-screen keyboard
     elseif state.login_step == "error" then
         label(L.lv_screen_active(), "登录失败：" .. tostring(state.login_err), state.cjk_font)
         L.lv_obj_align(L.lv_obj_get_child(L.lv_screen_active(), -1), lv.ALIGN_CENTER, 0, 0)
+        local retry = button(L.lv_screen_active(), "重试", function()
+            show_login()
+        end, state.cjk_font)
+        L.lv_obj_align(retry, lv.ALIGN_CENTER, 0, 60)
         state.login_step = "done"
     end
+end
+
+-- OTP entry: textarea + on-screen keyboard (need_otp accounts).
+function show_otp_input()
+    local scr = L.lv_screen_active()
+    label(scr, tostring(state.otp_hint or ""), state.cjk_font)
+    L.lv_obj_align(L.lv_obj_get_child(scr, -1), lv.ALIGN_TOP_MID, 0, HEIGHT - 330)
+    local ta = L.lv_textarea_create(scr)
+    L.lv_textarea_set_one_line(ta, true)
+    L.lv_textarea_set_max_length(ta, 4)
+    L.lv_obj_set_size(ta, 200, 44)
+    L.lv_obj_align(ta, lv.ALIGN_TOP_MID, 0, HEIGHT - 280)
+    local kb = L.lv_keyboard_create(scr)
+    L.lv_keyboard_set_textarea(kb, ta)
+    L.lv_obj_set_size(kb, WIDTH, 240)
+    L.lv_obj_align(kb, lv.ALIGN_BOTTOM_MID, 0, 0)
+    button(scr, "提交", function()
+        state.otp = L.lv_textarea_get_text(ta)
+        if state.otp and #state.otp >= 4 then
+            state.login_step = "poll"
+            local scr2 = L.lv_screen_active()
+            L.lv_obj_clean(scr2)
+            state.cbs = {}
+            render_qr_canvas(scr2, state.login_ctx.confirm_url)
+        end
+    end, state.cjk_font)
+    L.lv_obj_align(L.lv_obj_get_child(scr, -1), lv.ALIGN_TOP_MID, 0, HEIGHT - 230)
 end
 
 -- ----------------------------------------------------------------- shelf
@@ -214,14 +266,17 @@ end
 
 -- ---------------------------------------------------------------- reader
 
+local READER_TEXT_H = HEIGHT - 60  -- bottom 60px reserved for nav buttons
+
 local function render_current_page()
     local RB = require("reader_bridge")
-    local buf, w, h = RB.render_page(state.page, WIDTH, HEIGHT)
+    local buf, w, h = RB.render_page(state.page, WIDTH, READER_TEXT_H)
     if not buf then
         return
     end
     local scr = L.lv_screen_active()
     L.lv_obj_clean(scr)
+    state.cbs = {}
     local canvas = L.lv_canvas_create(scr)
     L.lv_canvas_set_buffer(canvas, buf, w, h, lv.CANVAS_CF_L8)
     state.page_buf = buf  -- keep the buffer alive as long as the canvas uses it
@@ -254,6 +309,19 @@ local function render_current_page()
     L.lv_obj_set_pos(back, WIDTH / 2 - 40, HEIGHT - 54)
 end
 
+local function load_fail(message)
+    local scr = L.lv_screen_active()
+    L.lv_obj_clean(scr)
+    state.cbs = {}
+    state.screen = "shelf"
+    label(scr, tostring(message), state.cjk_font)
+    L.lv_obj_align(L.lv_obj_get_child(scr, 0), lv.ALIGN_CENTER, 0, 0)
+    button(scr, "返回书架", function()
+        show_shelf()
+    end, state.cjk_font)
+    L.lv_obj_align(L.lv_obj_get_child(scr, -1), lv.ALIGN_CENTER, 0, 60)
+end
+
 local function load_tick()
     if state.screen ~= "loading" then
         return
@@ -268,24 +336,36 @@ local function load_tick()
             state.chapters = Content.fetch_catalog(app.client, book)
         end)
         if not ok then
-            state.screen = "shelf"
-            show_shelf()
+            load_fail("目录加载失败：" .. tostring(err))
+            return
+        end
+        if type(state.chapters) ~= "table" or #state.chapters == 0 then
+            load_fail("这本书没有可读章节")
             return
         end
     elseif state.load_step == "chapter" then
         state.load_step = "render"
-        local chapter = state.chapters[1]
-        local path = Canonical.ensure_chapter(app.client, app.settings, book, chapter, {})
-        state.chapter_path = path
+        local ok, err = pcall(function()
+            state.chapter_path = Canonical.ensure_chapter(
+                app.client, app.settings, book, state.chapters[1], {})
+        end)
+        if not ok then
+            load_fail("章节下载失败：" .. tostring(err))
+            return
+        end
     elseif state.load_step == "render" then
         state.load_step = "done"
         local RB = require("reader_bridge")
-        RB.open(state.chapter_path, {
+        local ok = RB.open(state.chapter_path, {
             width = WIDTH,
-            height = HEIGHT - 60,
+            height = READER_TEXT_H,
             font_size = 28,
             font_face = os.getenv("CR_FONT_FACE") or "Heiti SC",
         })
+        if not ok then
+            load_fail("章节无法打开（文件可能损坏）")
+            return
+        end
         state.page = 1
         state.screen = "reader"
         render_current_page()
@@ -299,7 +379,13 @@ local function main()
     L.lv_sdl_window_create(WIDTH, HEIGHT)
     L.lv_sdl_keyboard_create()
     L.lv_sdl_mouse_create()
-    L.lv_freetype_init(4096)
+    -- freetype is already initialized by lv_init (cache size is set in
+    -- lv_conf.h via LV_FREETYPE_CACHE_FT_GLYPH_CNT)
+
+    -- the crengine bridge needs its font manager initialized once before
+    -- any document is opened (cr_open dereferences fontMan otherwise)
+    local RB = require("reader_bridge")
+    RB.init(os.getenv("CR_FONT_DIR") or "/tmp/cr-fonts")
 
     local font_path = os.getenv("CR_FONT_PATH")
         or "/System/Library/Fonts/STHeiti Medium.ttc"

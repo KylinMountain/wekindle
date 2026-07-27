@@ -9,6 +9,7 @@ typedef void lv_display_t;
 typedef void lv_indev_t;
 typedef void lv_font_t;
 typedef void lv_event_t;
+typedef struct { uint8_t blue; uint8_t green; uint8_t red; } lv_color_t;
 typedef void (*lv_event_cb_t)(lv_event_t * e);
 
 void lv_init(void);
@@ -23,6 +24,13 @@ lv_obj_t * lv_obj_create(lv_obj_t * parent);
 lv_obj_t * lv_label_create(lv_obj_t * parent);
 lv_obj_t * lv_button_create(lv_obj_t * parent);
 lv_obj_t * lv_canvas_create(lv_obj_t * parent);
+lv_obj_t * lv_textarea_create(lv_obj_t * parent);
+lv_obj_t * lv_keyboard_create(lv_obj_t * parent);
+void lv_keyboard_set_textarea(lv_obj_t * keyboard, lv_obj_t * textarea);
+void lv_textarea_set_text(lv_obj_t * ta, const char * txt);
+void lv_textarea_set_max_length(lv_obj_t * ta, uint32_t num);
+void lv_textarea_set_one_line(lv_obj_t * ta, bool en);
+const char * lv_textarea_get_text(lv_obj_t * ta);
 
 void lv_obj_set_pos(lv_obj_t * obj, int32_t x, int32_t y);
 void lv_obj_set_size(lv_obj_t * obj, int32_t w, int32_t h);
@@ -41,8 +49,8 @@ void lv_label_set_long_mode(lv_obj_t * obj, int mode);
 void lv_canvas_set_buffer(lv_obj_t * canvas, void * buf, int32_t w, int32_t h, int cf);
 
 void lv_obj_set_style_text_font(lv_obj_t * obj, const lv_font_t * font, int selector);
-void lv_obj_set_style_bg_color(lv_obj_t * obj, uint32_t color, int selector);
-void lv_obj_set_style_text_color(lv_obj_t * obj, uint32_t color, int selector);
+void lv_obj_set_style_bg_color(lv_obj_t * obj, lv_color_t color, int selector);
+void lv_obj_set_style_text_color(lv_obj_t * obj, lv_color_t color, int selector);
 void lv_obj_set_style_text_align(lv_obj_t * obj, int align, int selector);
 void lv_obj_set_style_pad_all(lv_obj_t * obj, int32_t pad, int selector);
 void lv_obj_set_flex_flow(lv_obj_t * obj, int flow);
@@ -70,13 +78,13 @@ local lv = {
     -- flex flow
     FLEX_FLOW_COLUMN = 1,
     FLEX_FLOW_ROW = 0,
-    FLEX_ALIGN_CENTER = 1,
+    FLEX_ALIGN_CENTER = 2,
     FLEX_ALIGN_START = 0,
     FLEX_ALIGN_SPACE_BETWEEN = 5,
     -- freetype render mode / style
     FT_RENDER_MODE_NORMAL = 0,
     FT_STYLE_NORMAL = 0,
-    FT_STYLE_BOLD = 1,
+    FT_STYLE_BOLD = 2,
 }
 
 return lv
