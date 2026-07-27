@@ -6,7 +6,7 @@ set -u
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 LUA="${1:-luajit}"
 
-export LUA_PATH="$ROOT/core/lua/?.lua;$ROOT/platform/mock/?.lua;$ROOT/platform/standalone/?.lua;$ROOT/third_party/?.lua;$ROOT/apps/koreader-plugin/?.lua;;"
+export LUA_PATH="$ROOT/core/lua/?.lua;$ROOT/platform/mock/?.lua;$ROOT/platform/standalone/?.lua;$ROOT/platform/linux/?.lua;$ROOT/third_party/?.lua;$ROOT/apps/koreader-plugin/?.lua;;"
 
 pass=0
 fail=0
