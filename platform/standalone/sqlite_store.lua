@@ -63,6 +63,7 @@ function SqliteStore:new(opts)
     check_db(self.db, C.sqlite3_exec(self.db,
         "PRAGMA journal_mode = " .. mode .. ";"
         .. "PRAGMA synchronous = FULL;"
+        .. "PRAGMA busy_timeout = 3000;"
         .. "CREATE TABLE IF NOT EXISTS kv (key TEXT PRIMARY KEY, value TEXT NOT NULL);",
         nil, nil, nil), "init")
     return self
@@ -72,6 +73,15 @@ function SqliteStore:_begin()
     if not self._in_txn then
         check_db(self.db, C.sqlite3_exec(self.db, "BEGIN IMMEDIATE;", nil, nil, nil), "begin")
         self._in_txn = true
+    end
+end
+
+-- Roll back a failed transaction and reset the flag, so subsequent writes
+-- start a fresh transaction instead of piling onto a doomed one.
+function SqliteStore:_abort()
+    if self._in_txn then
+        C.sqlite3_exec(self.db, "ROLLBACK;", nil, nil, nil)
+        self._in_txn = false
     end
 end
 
@@ -119,6 +129,7 @@ function SqliteStore:saveSetting(key, value)
     local rc = C.sqlite3_step(stmt[0])
     C.sqlite3_finalize(stmt[0])
     if rc ~= SQLITE_DONE then
+        self:_abort()
         check_db(self.db, rc, "upsert")
     end
 end
@@ -132,13 +143,18 @@ function SqliteStore:delSetting(key)
     local rc = C.sqlite3_step(stmt[0])
     C.sqlite3_finalize(stmt[0])
     if rc ~= SQLITE_DONE then
+        self:_abort()
         check_db(self.db, rc, "delete")
     end
 end
 
 function SqliteStore:flush()
     if self._in_txn then
-        check_db(self.db, C.sqlite3_exec(self.db, "COMMIT;", nil, nil, nil), "commit")
+        local rc = C.sqlite3_exec(self.db, "COMMIT;", nil, nil, nil)
+        if rc ~= SQLITE_OK then
+            self:_abort()
+            check_db(self.db, rc, "commit")
+        end
         self._in_txn = false
     end
 end

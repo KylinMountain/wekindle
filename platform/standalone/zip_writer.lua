@@ -12,6 +12,7 @@
 -- ZIP/EPUB, just larger).
 
 local ffi = require("ffi")
+local bit = require("bit")
 
 ffi.cdef[[
 unsigned long crc32(unsigned long crc, const unsigned char *buf, unsigned int len);
@@ -22,6 +23,27 @@ int compress2(unsigned char *dest, unsigned long *destLen,
 
 local ok_z, z = pcall(ffi.load, "z")
 
+-- Pure-Lua CRC32 fallback for platforms without libz (table-driven,
+-- processes ~1 byte per iteration — fast enough for EPUB-scale payloads).
+local crc_table
+local function crc32_lua(data)
+    if not crc_table then
+        crc_table = {}
+        for n = 0, 255 do
+            local c = n
+            for _ = 1, 8 do
+                c = c % 2 == 1 and bit.bxor(bit.rshift(c, 1), 0xEDB88320) or bit.rshift(c, 1)
+            end
+            crc_table[n] = c
+        end
+    end
+    local crc = 0xFFFFFFFF
+    for i = 1, #data do
+        crc = bit.bxor(crc_table[bit.band(bit.bxor(crc, data:byte(i)), 0xFF)], bit.rshift(crc, 8))
+    end
+    return bit.bxor(crc, 0xFFFFFFFF)
+end
+
 local ZipWriter = {}
 ZipWriter.__index = ZipWriter
 
@@ -30,6 +52,14 @@ function ZipWriter:new()
 end
 
 function ZipWriter:open(path, _mode)
+    -- Touch the file immediately so unwritable destinations fail at open()
+    -- time instead of silently succeeding until close().
+    local file, err = io.open(path, "wb")
+    if not file then
+        self.err = err
+        return false
+    end
+    file:close()
     self.path = path
     self.entries = {}
     return true
@@ -57,12 +87,16 @@ end
 
 local function dos_time(mtime)
     local t = os.date("*t", mtime)
+    local year = math.max(t.year, 1980)  -- DOS epoch starts at 1980
     local dostime = t.hour * 2048 + t.min * 32 + math.floor(t.sec / 2)
-    local dosdate = (t.year - 1980) * 512 + t.month * 32 + t.day
+    local dosdate = (year - 1980) * 512 + t.month * 32 + t.day
     return dostime, dosdate
 end
 
 local function crc(data)
+    if not ok_z then
+        return crc32_lua(data)
+    end
     local len = ffi.new("unsigned long", #data)
     return tonumber(z.crc32(0, ffi.cast("const unsigned char *", data), len))
 end
@@ -97,6 +131,14 @@ function ZipWriter:close()
 
     local central = {}
     local offset = 0
+    local function checked_write(...)
+        local ok, werr = file:write(...)
+        if not ok then
+            file:close()
+            self.entries = nil
+            error("zip writer: write failed: " .. tostring(werr))
+        end
+    end
     for _i, entry in ipairs(self.entries) do
         local method = entry.compression == "deflate" and METHOD_DEFLATE or METHOD_STORE
         local payload = entry.data
@@ -115,7 +157,7 @@ function ZipWriter:close()
             u32(checksum), u32(#payload), u32(#entry.data),
             u16(#entry.name), u16(0), entry.name,
         }
-        file:write(header, payload)
+        checked_write(header, payload)
         central[#central + 1] = table.concat{
             "PK\1\2", u16(20), u16(20), u16(0), u16(method),
             u16(dostime), u16(dosdate),
@@ -127,14 +169,17 @@ function ZipWriter:close()
     end
 
     local cd = table.concat(central)
-    file:write(cd)
-    file:write(table.concat{
+    checked_write(cd)
+    checked_write(table.concat{
         "PK\5\6", u16(0), u16(0),
         u16(#self.entries), u16(#self.entries),
         u32(#cd), u32(offset), u16(0),
     })
-    file:close()
+    local ok_close, close_err = file:close()
     self.entries = nil
+    if not ok_close then
+        error("zip writer: close failed: " .. tostring(close_err))
+    end
     return true
 end
 

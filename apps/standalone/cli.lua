@@ -25,6 +25,11 @@ local json = require("weread.lib.json")
 local Content = require("weread.lib.content")
 
 local app = bootstrap.init()
+local transport_sleep = function(s)
+    local ffi = require("ffi")
+    ffi.cdef("unsigned int usleep(unsigned int usec);")
+    ffi.C.usleep(math.floor(s * 1000000))
+end
 
 -- Merge credentials from secrets.lua if present (manual seeding until
 -- QR login exists).
@@ -49,6 +54,7 @@ local command = arg[1]
 local function usage()
     print([[
 usage: cli.lua <command> [args]
+  login                        QR login via WeChat scan
   account                      show account + credential status
   shelf                        list bookshelf
   bookinfo <book_id>           book metadata
@@ -59,6 +65,11 @@ usage: cli.lua <command> [args]
 end
 
 local commands = {}
+
+function commands.login()
+    local Login = require("login")
+    Login.login(app.client, app.settings, transport_sleep)
+end
 
 function commands.account()
     local account = app.settings:get("account")
@@ -141,6 +152,7 @@ function commands.download(book_id, chapter_uid)
             done_ok, done_value = success, value
         end,
     })
+    app.drain_tasks()
     print("")
     if done_ok then
         print("saved: " .. tostring(done_value))
@@ -154,7 +166,7 @@ if not command or not commands[command] then
     usage()
 end
 
-if command ~= "account" then
+if command ~= "account" and command ~= "login" then
     seed_secrets()
     if not app.settings:is_cookie_configured() then
         io.stderr:write("no credentials; create " .. app.data_dir .. "/secrets.lua first\n")

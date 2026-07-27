@@ -17,6 +17,58 @@ local function default_data_dir()
     return home .. "/.wereader"
 end
 
+-- Monotonic clock via FFI (os.clock() measures CPU time, which stalls
+-- during blocking I/O and would corrupt download perf telemetry).
+local ffi = require("ffi")
+ffi.cdef("unsigned int usleep(unsigned int usec);")
+local now_ms
+if ffi.os == "OSX" then
+    ffi.cdef[[
+uint64_t mach_absolute_time(void);
+typedef struct { uint32_t numer; uint32_t denom; } mach_timebase_info_data_t;
+int mach_timebase_info(mach_timebase_info_data_t *info);
+]]
+    local info = ffi.new("mach_timebase_info_data_t[1]")
+    ffi.C.mach_timebase_info(info)
+    local numer, denom = tonumber(info[0].numer), tonumber(info[0].denom)
+    now_ms = function()
+        return tonumber(ffi.C.mach_absolute_time()) * numer / denom / 1e6
+    end
+else
+    ffi.cdef[[
+typedef long time_t;
+typedef struct { time_t tv_sec; long tv_nsec; } timespec;
+int clock_gettime(int clk_id, timespec *tp);
+]]
+    local CLOCK_MONOTONIC = 1
+    local tp = ffi.new("timespec[1]")
+    now_ms = function()
+        ffi.C.clock_gettime(CLOCK_MONOTONIC, tp)
+        return tonumber(tp[0].tv_sec) * 1000 + tonumber(tp[0].tv_nsec) / 1e6
+    end
+end
+
+-- FIFO trampoline for the downloader scheduler: schedule() never runs the
+-- step inline (deep chapter counts would overflow the Lua stack via
+-- recursive _step -> schedule chains), and delays are honored by sleeping
+-- before the queued step runs.
+local function make_scheduler()
+    local queue = {}
+    local scheduler = function(delay, fn)
+        queue[#queue + 1] = { delay = delay or 0, fn = fn }
+    end
+    local function drain()
+        while #queue > 0 do
+            local item = table.remove(queue, 1)
+            if item.delay > 0 then
+                ffi.C.usleep(math.floor(item.delay * 1000000))
+            end
+            item.fn()
+        end
+    end
+    return scheduler, drain
+end
+
 -- Console implementations of the downloader UI ports.
 local console = {}
 
@@ -48,13 +100,15 @@ function M.init(opts)
     local transport = CurlTransport:new()
     local client = Client:new(settings, transport)
 
+    local schedule, drain = make_scheduler()
+
     local downloader = Downloader:new{
         client = client,
         settings = settings,
-        schedule = function(_delay, fn) fn() end,
+        schedule = schedule,
         prevent_standby = function() end,
         allow_standby = function() end,
-        now_ms = function() return os.clock() * 1000 end,
+        now_ms = now_ms,
         show_info = function(text) print(text) end,
         show_transient = function(text) print(text) end,
         refresh_ui = function() end,
@@ -77,6 +131,7 @@ function M.init(opts)
         settings = settings,
         client = client,
         downloader = downloader,
+        drain_tasks = drain,
     }
 end
 
