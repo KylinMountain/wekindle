@@ -152,15 +152,17 @@ doc:close()
 | ILogger | ✅ 本文档 | ✅ `weread.lib.log` shim | ✅ stderr fallback | Phase 1 |
 | IJson | ✅ 本文档 | ✅ `weread.lib.json` shim | ✅ vendored dkjson | Phase 1（原生） |
 | IHttpClient | ✅ 本文档 | ✅ `weread/adapter/socket_transport.lua` | ✅ `platform/mock/mock_transport.lua` | Phase 1 |
-| IStorage | ✅ 本文档 | ⬜ settings 仍在插件侧 | ⬜ | Phase 1 |
+| IStorage | ✅ 本文档 | ✅ `weread/adapter/koreader_settings.lua` | ✅ settings_spec 内存 KV | Phase 1 |
 | ISecretStore | ✅ 本文档 | ⬜ | ⬜ | Phase 2 |
-| IScheduler | ✅ 本文档 | ⬜ downloader 仍直连 UIManager | ⬜ | Phase 1 |
-| IArchiver | ✅ 本文档 | ✅ ffi/archiver fallback + `Content.set_zip_writer_factory` | ⬜ | Phase 1 |
-| IDevice | ✅ 本文档 | n/a（KOReader 原生） | ⬜ | Phase 2 |
+| IScheduler | ✅ 本文档 | ✅ `weread/adapter/koreader_downloader_host.lua` | ✅ downloader_spec 队列 | Phase 1 |
+| IArchiver | ✅ 本文档 | ✅ ffi/archiver fallback + `Content.set_zip_writer_factory` | ✅ content_epub_spec | Phase 1 |
+| IDevice | ✅ 本文档 | ✅ 待机守卫（host adapter）；其余 n/a | ✅ downloader_spec 计数 | Phase 2 |
 | IReaderEngine | ✅ 本文档 | n/a | ⬜ | Phase 1+ |
 
 已迁入 core 的模块：protocol、crypto、cookie、position_mapper、reader_state、
 book_reviews、read_stats、scan、annotations、thought_db、book_store、
-progress_sync、client、content、read_report、thoughts。
-仍在插件侧的模块：downloader、settings、qr_login、reader_lifecycle、
-plugin_util、mixin、migrations、i18n（均为 KOReader 设备/UI/存储耦合层）。
+progress_sync、client、content、read_report、thoughts、settings、downloader。
+仍在插件侧的模块：qr_login、reader_lifecycle、plugin_util、mixin、migrations、
+i18n（均为 KOReader 设备/UI 耦合层），以及 `weread/adapter/` 下的三个
+KOReader 端口适配器（socket_transport、koreader_settings、
+koreader_downloader_host）。

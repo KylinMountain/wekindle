@@ -1,34 +1,31 @@
--- Book/chapter download engine.
+-- Book/chapter download engine (weread-core).
 --
--- Extracted from main.lua as an independent, dependency-injected object so the
--- plugin entry point keeps only thin menu wrappers. The host injects the API
--- client, settings, and a small set of UI/framework callbacks; the engine owns
--- the whole async download state machine and the device standby guard.
+-- Dependency-injected state machine: the host provides the API client,
+-- settings, scheduler/device ports, and UI callbacks; the engine owns the
+-- async download state machine and the standby guard. See
+-- core/contracts/ports.md (IScheduler / IDevice) for the port contracts.
 --
 -- Standby guard: long downloads must not let the device suspend mid-transfer.
 -- Every scheduled step runs through _scheduleGuarded, which wraps the step in
 -- xpcall and always releases the guard (and closes the dialog + reports the
--- error) if the step throws. This is critical: a bare UIManager:scheduleIn that
--- threw would leak the guard and leave the device unable to sleep until reboot.
+-- error) if the step throws. A bare scheduled step that threw would leak the
+-- guard and leave the device unable to sleep until reboot.
 
-local ConfirmBox = require("ui/widget/confirmbox")
-local Device = require("device")
-local PluginShare = require("pluginshare")
-local UIManager = require("ui/uimanager")
-local logger = require("logger")
-local time = require("ui/time")
-local T = require("ffi/util").template
+local logger = require("weread.lib.log")
 
 local Content = require("weread.lib.content")
-local DownloadDialog = require("weread.ui.download_dialog")
-local I18n = require("weread.lib.i18n")
 local Thoughts = require("weread.lib.thoughts")
 local WeRead = require("weread.lib.protocol")
 
 local LOG_MODULE = "[WeRead]"
 
-local function _(text)
-    return I18n.tr(text)
+-- Minimal printf-style "%1" template (replaces ffi/util.template so core
+-- stays free of KOReader's ffi helpers).
+local function tpl(text, ...)
+    local values = { ... }
+    return (tostring(text):gsub("%%(%d+)", function(index)
+        return tostring(values[tonumber(index)] or "")
+    end))
 end
 
 local function log_error(err)
@@ -48,39 +45,56 @@ local function display_error(err)
     return text
 end
 
--- Block OS-level standby (Kindle powerd, Kobo lid/menu-suspend, etc.)
-local function preventOsStandby()
-    if Device:isKindle() then
-        os.execute("lipc-set-prop com.lab126.powerd preventScreenSaver 1")
-    end
-    if Device:isCervantes() or Device:isKobo() then
-        PluginShare.pause_auto_suspend = true
-    end
-end
-
-local function allowOsStandby()
-    if Device:isKindle() then
-        os.execute("lipc-set-prop com.lab126.powerd preventScreenSaver 0")
-    end
-    if Device:isCervantes() or Device:isKobo() then
-        PluginShare.pause_auto_suspend = false
-    end
-end
-
 local Downloader = {}
 Downloader.__index = Downloader
 
+local REQUIRED_PORTS = {
+    "client", "settings",
+    -- IScheduler: schedule(delay_seconds, fn); implementations must clamp
+    -- to a minimum 0.1s delay (scheduleIn(0) deadlocks KOReader's loop).
+    "schedule",
+    -- IDevice power guard
+    "prevent_standby", "allow_standby",
+    -- monotonic clock in milliseconds (perf logging only)
+    "now_ms",
+    -- UI ports
+    "show_info", "show_transient", "refresh_ui", "refresh_shelf",
+    "open_file", "safe_callback",
+    "require_login", "run_online_task",
+    -- new_progress_dialog{title, progress_max, buttons} -> dialog
+    --   dialog: show() / close() / setTitle(text) / reportProgress(value)
+    "new_progress_dialog",
+    -- show_confirm{text, ok_text, ok_callback, cancel_text}
+    "show_confirm",
+}
+
 -- o = {
---   client, settings,                       -- injected dependencies
+--   client, settings,                                     -- injected dependencies
+--   schedule, prevent_standby, allow_standby, now_ms,     -- platform ports
 --   show_info(text), show_transient(text, timeout),
 --   refresh_ui(), refresh_shelf(),
 --   open_file(path), safe_callback(label, fn),
---   require_login(cookie, api_key), run_online_task(label, fn),  -- host framework
+--   require_login(cookie, api_key), run_online_task(label, fn),
+--   new_progress_dialog(...), show_confirm(...),
+--   tr(text)                                              -- optional translation
 -- }
 function Downloader:new(o)
     o = o or {}
-    setmetatable(o, self)
-    return o
+    for _i, key in ipairs(REQUIRED_PORTS) do
+        assert(o[key] ~= nil, "weread.lib.downloader: missing port " .. key)
+    end
+    if o.tr == nil then
+        o.tr = function(text) return text end
+    end
+    return setmetatable(o, self)
+end
+
+function Downloader:_(text)
+    return self.tr(text)
+end
+
+function Downloader:t(text, ...)
+    return tpl(self.tr(text), ...)
 end
 
 -- Keep the device awake during long book downloads (reference counted so
@@ -88,8 +102,7 @@ end
 function Downloader:_beginStandby()
     self._standby_ref = (self._standby_ref or 0) + 1
     if self._standby_ref == 1 then
-        UIManager:preventStandby()
-        preventOsStandby()
+        self.prevent_standby("download")
     end
 end
 
@@ -100,8 +113,7 @@ function Downloader:_endStandby()
     end
     self._standby_ref = ref - 1
     if self._standby_ref == 0 then
-        UIManager:allowStandby()
-        allowOsStandby()
+        self.allow_standby("download")
     end
 end
 
@@ -126,7 +138,7 @@ end
 -- Schedule any download step behind xpcall so an uncaught error always releases
 -- the standby guard, closes the progress dialog, and reports the failure.
 function Downloader:_scheduleGuarded(dl, step_fn, delay)
-    UIManager:scheduleIn(delay or 0.1, function()
+    self.schedule(delay or 0.1, function()
         local ok, err = xpcall(step_fn, debug.traceback)
         if not ok and dl.standby_guard then
             self:_releaseStandby(dl)
@@ -136,7 +148,7 @@ function Downloader:_scheduleGuarded(dl, step_fn, delay)
             end
             logger.err(LOG_MODULE, "download step failed:", log_error(err))
             self:_notifyCompletion(dl, false, err)
-            self.show_info(T(_("Download failed:\n%1"), display_error(err)))
+            self.show_info(self:t("Download failed:\n%1", display_error(err)))
         end
     end)
 end
@@ -150,7 +162,7 @@ function Downloader:start(book, chapters, suffix, options)
         end
         return false
     end
-    local task_label = options.single_chapter and _("Download chapter and read") or _("Download full book")
+    local task_label = options.single_chapter and self:_("Download chapter and read") or self:_("Download full book")
     local started = self.run_online_task(task_label, function()
         local ok_init, err_init = pcall(function()
             Content.ensure_reader_state(self.client, book)
@@ -160,7 +172,7 @@ function Downloader:start(book, chapters, suffix, options)
             if type(options.on_complete) == "function" then
                 pcall(options.on_complete, false, err_init)
             end
-            self.show_info(T(_("Download failed:\n%1"), display_error(err_init)))
+            self.show_info(self:t("Download failed:\n%1", display_error(err_init)))
             return
         end
 
@@ -182,16 +194,16 @@ function Downloader:start(book, chapters, suffix, options)
             single_chapter = options.single_chapter == true,
             open_on_complete = options.open_on_complete == true,
             on_complete = options.on_complete,
-            started_at = time.now(),
+            started_at = self.now_ms(),
             standby_guard = true,
         }
 
-        local progress_dialog = DownloadDialog:new{
-            title = T(_("Downloading: %1"), book.title or ""),
+        local progress_dialog = self.new_progress_dialog{
+            title = self:t("Downloading: %1", book.title or ""),
             progress_max = total,
             buttons = {{
                 {
-                    text = _("Cancel download"),
+                    text = self:_("Cancel download"),
                     callback = function()
                         dl.cancelled = true
                         if dl.progress_dialog then
@@ -223,7 +235,7 @@ function Downloader:_setStage(dl, title, progress)
 end
 
 function Downloader:_perf(dl, stage, started, ...)
-    local elapsed = tonumber(time.now() - started) / 1000
+    local elapsed = (self.now_ms() - started) / 1000
     logger.info(LOG_MODULE, "download_perf", "stage=", stage,
         "ms=", string.format("%.1f", elapsed),
         "chapter=", tostring(dl.index) .. "/" .. tostring(dl.total), ...)
@@ -251,13 +263,13 @@ function Downloader:_finishChapter(dl)
     local cache = self.settings:get("cache")
     local stage_text
     if cache.download_book_images then
-        stage_text = T(_("Downloading images · chapter %1/%2"), tostring(dl.index), tostring(dl.total))
+        stage_text = self:t("Downloading images · chapter %1/%2", tostring(dl.index), tostring(dl.total))
     else
-        stage_text = T(_("Processing chapter %1/%2"), tostring(dl.index), tostring(dl.total))
+        stage_text = self:t("Processing chapter %1/%2", tostring(dl.index), tostring(dl.total))
     end
     self:_setStage(dl,
         stage_text, dl.index - 0.1)
-    local started = time.now()
+    local started = self.now_ms()
     local ok, xhtml, chapter_assets = pcall(function()
         return Content.finalize_single_chapter_content(
             self.client, self.settings, dl.book, chapter, dl.current.xhtml, dl.state
@@ -289,9 +301,9 @@ function Downloader:_applyAnnotations(dl)
     local chapter = dl.current.chapter
     local book_id = dl.book.book_id or dl.book.bookId
     self:_setStage(dl,
-        T(_("Processing underlines and thoughts · chapter %1/%2"), tostring(dl.index), tostring(dl.total)),
+        self:t("Processing underlines and thoughts · chapter %1/%2", tostring(dl.index), tostring(dl.total)),
         dl.index - 0.15)
-    local started = time.now()
+    local started = self.now_ms()
     local ok, processed, annotation_css = pcall(function()
         return Thoughts.apply_data(self.settings, book_id, chapter.chapterUid,
             dl.current.xhtml, annotation.underlines, annotation.reviews, dl.book, {
@@ -316,7 +328,7 @@ end
 function Downloader:_annotationBatch(dl)
     if dl.cancelled then
         self:_releaseStandby(dl)
-        self.show_transient(_("Download cancelled"), 2)
+        self.show_transient(self:_("Download cancelled"), 2)
         return
     end
     local annotation = dl.annotation
@@ -333,11 +345,11 @@ function Downloader:_annotationBatch(dl)
     local batch_total = #annotation.batches
     local fractional = dl.index - 0.85 + 0.7 * batch_index / math.max(1, batch_total)
     self:_setStage(dl,
-        T(_("Downloading thoughts %1/%2 · chapter %3/%4"),
+        self:t("Downloading thoughts %1/%2 · chapter %3/%4",
             tostring(batch_index), tostring(batch_total), tostring(dl.index), tostring(dl.total)),
         fractional)
 
-    local started = time.now()
+    local started = self.now_ms()
     local ok, result, err = self.client:get_chapter_reviews_batch(
         dl.book.book_id or dl.book.bookId,
         dl.current.chapter.chapterUid,
@@ -351,7 +363,7 @@ function Downloader:_annotationBatch(dl)
         if annotation.retry < 2 then
             annotation.retry = annotation.retry + 1
             self:_setStage(dl,
-                T(_("Retrying thoughts %1/%2 · attempt %3"),
+                self:t("Retrying thoughts %1/%2 · attempt %3",
                     tostring(batch_index), tostring(batch_total), tostring(annotation.retry)),
                 fractional)
             self:_scheduleGuarded(dl, function() self:_annotationBatch(dl) end, 0.6 * annotation.retry)
@@ -376,9 +388,9 @@ function Downloader:_startAnnotations(dl)
     local chapter = dl.current.chapter
     local book_id = dl.book.book_id or dl.book.bookId
     self:_setStage(dl,
-        T(_("Downloading underlines · chapter %1/%2"), tostring(dl.index), tostring(dl.total)),
+        self:t("Downloading underlines · chapter %1/%2", tostring(dl.index), tostring(dl.total)),
         dl.index - 0.85)
-    local started = time.now()
+    local started = self.now_ms()
     local ok, underlines, ranges, err = Thoughts.fetch_underlines(
         self.client, self.settings, book_id, chapter.chapterUid
     )
@@ -407,7 +419,7 @@ function Downloader:_step(dl)
     if dl.cancelled then
         self:_releaseStandby(dl)
         self:_notifyCompletion(dl, false, "cancelled")
-        self.show_transient(_("Download cancelled"), 2)
+        self.show_transient(self:_("Download cancelled"), 2)
         return
     end
 
@@ -420,11 +432,11 @@ function Downloader:_step(dl)
             self:_releaseStandby(dl)
             logger.err(LOG_MODULE, "book download failed: no chapters downloaded")
             self:_notifyCompletion(dl, false, "no_chapters_downloaded")
-            self.show_info(_("No chapters were downloaded."))
+            self.show_info(self:_("No chapters were downloaded."))
             return
         end
-        self:_setStage(dl, _("Building EPUB..."), dl.total)
-        local save_started = time.now()
+        self:_setStage(dl, self:_("Building EPUB..."), dl.total)
+        local save_started = self.now_ms()
         local ok, path = pcall(function()
             if dl.single_chapter then
                 local chapter = dl.selected[1]
@@ -469,7 +481,7 @@ function Downloader:_step(dl)
         if not ok then
             logger.err(LOG_MODULE, "save downloaded book failed:", log_error(path))
             self:_notifyCompletion(dl, false, path)
-            self.show_info(T(_("Download failed:\n%1"), display_error(path)))
+            self.show_info(self:t("Download failed:\n%1", display_error(path)))
             return
         end
         if #dl.failed > 0 then
@@ -484,16 +496,16 @@ function Downloader:_step(dl)
         end
         local completion_text
         if #dl.failed > 0 then
-            completion_text = T(
-                _("Downloaded %1 chapters; %2 failed.\n\nBook saved:\n%3\n\nRead now?"),
+            completion_text = self:t(
+                "Downloaded %1 chapters; %2 failed.\n\nBook saved:\n%3\n\nRead now?",
                 tostring(#dl.selected), tostring(#dl.failed), path
             )
         else
-            completion_text = T(_("Downloaded %1 chapters.\n\nBook saved:\n%2\n\nRead now?"), tostring(#dl.selected), path)
+            completion_text = self:t("Downloaded %1 chapters.\n\nBook saved:\n%2\n\nRead now?", tostring(#dl.selected), path)
         end
         if dl.annotation_failed_batches > 0 then
-            completion_text = completion_text .. "\n\n" .. T(
-                _("%1 thought batch(es) failed after retries; the EPUB contains the remaining available thoughts."),
+            completion_text = completion_text .. "\n\n" .. self:t(
+                "%1 thought batch(es) failed after retries; the EPUB contains the remaining available thoughts.",
                 tostring(dl.annotation_failed_batches)
             )
         end
@@ -507,23 +519,23 @@ function Downloader:_step(dl)
             return
         end
         self:_notifyCompletion(dl, true, path)
-        UIManager:show(ConfirmBox:new{
+        self.show_confirm{
             text = completion_text,
-            ok_text = _("Read now"),
-            ok_callback = self.safe_callback(_("Read now"), function()
+            ok_text = self:_("Read now"),
+            ok_callback = self.safe_callback(self:_("Read now"), function()
                 self.open_file(path)
             end),
-            cancel_text = _("Close"),
-        })
+            cancel_text = self:_("Close"),
+        }
         return
     end
 
     local chapter = dl.chapters[dl.index]
     self:_setStage(dl,
-        T(_("Downloading chapter %1/%2: %3"), tostring(dl.index), tostring(dl.total),
+        self:t("Downloading chapter %1/%2: %3", tostring(dl.index), tostring(dl.total),
             chapter.title or tostring(chapter.chapterUid)),
         dl.index - 1)
-    local started = time.now()
+    local started = self.now_ms()
     local ok, xhtml = pcall(function()
         return Content.fetch_single_chapter_source(
             self.client, self.settings, dl.book, chapter, dl.state

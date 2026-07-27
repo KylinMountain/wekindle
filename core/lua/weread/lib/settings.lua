@@ -1,8 +1,12 @@
-local DataStorage = require("datastorage")
 local BookStore = require("weread.lib.book_store")
 local Cookie = require("weread.lib.cookie")
-local LuaSettings = require("luasettings")
-local lfs = require("libs/libkoreader-lfs")
+
+-- weread-core settings repository. Persistence is injected via a key-value
+-- store port (IStorage, see core/contracts/ports.md):
+--   store:readSetting(key, default) / store:saveSetting(key, value)
+--   store:delSetting(key) / store:flush()
+-- The KOReader adapter supplies LuaSettings; the standalone host supplies a
+-- SQLite-backed store. Directory creation is injectable via opts.ensure_dir.
 
 local Settings = {}
 Settings.__index = Settings
@@ -68,10 +72,11 @@ local function deepcopy(value)
     return out
 end
 
-local function ensure_dir(path)
-    if not lfs.attributes(path, "mode") then
-        lfs.mkdir(path)
+local function default_ensure_dir(path)
+    if not path or path == "" then
+        return
     end
+    os.execute("mkdir -p " .. string.format("%q", path))
 end
 
 local function clear_auth_store(store)
@@ -82,15 +87,29 @@ local function clear_auth_store(store)
     store:saveSetting("account", deepcopy(defaults.account))
 end
 
-function Settings:new()
-    local data_dir = DataStorage:getFullDataDir() .. "/weread"
+-- opts = {
+--   store      -- required KV store port (readSetting/saveSetting/flush)
+--   data_dir   -- required base directory for book data
+--   ensure_dir -- optional function(path); defaults to `mkdir -p`
+-- }
+function Settings:new(opts)
+    opts = opts or {}
+    assert(type(opts.store) == "table"
+        and type(opts.store.readSetting) == "function"
+        and type(opts.store.saveSetting) == "function"
+        and type(opts.store.flush) == "function",
+        "weread.lib.settings: a KV store port is required (IStorage)")
+    assert(type(opts.data_dir) == "string" and opts.data_dir ~= "",
+        "weread.lib.settings: data_dir is required")
+    local ensure_dir = opts.ensure_dir or default_ensure_dir
+    local data_dir = opts.data_dir
     ensure_dir(data_dir)
     local obj = {
         data_dir = data_dir,
         default_cache_dir = data_dir .. "/cache",
-        settings_file = DataStorage:getSettingsDir() .. "/weread.lua",
+        store = opts.store,
+        ensure_dir = ensure_dir,
     }
-    obj.store = LuaSettings:open(obj.settings_file)
     -- cache_dir is the download root; defaults to <data_dir>/cache unless overridden.
     local download_dir = obj.store:readSetting("download_dir", "")
     obj.cache_dir = (type(download_dir) == "string" and download_dir ~= "") and download_dir or obj.default_cache_dir
@@ -267,7 +286,7 @@ function Settings:set_download_dir(path)
         self.cache_dir = path
     end
     self:flush()
-    ensure_dir(self.cache_dir)
+    self.ensure_dir(self.cache_dir)
     return self.cache_dir
 end
 

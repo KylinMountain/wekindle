@@ -18,7 +18,6 @@ local WidgetContainer = require("ui/widget/container/widgetcontainer")
 
 local Client = require("weread.lib.client")
 local SocketTransport = require("weread.adapter.socket_transport")
-local Downloader = require("weread.lib.downloader")
 local Mixin = require("weread.lib.mixin")
 local Migrations = require("weread.lib.migrations")
 local PluginUtil = require("weread.lib.plugin_util")
@@ -26,7 +25,8 @@ local ProgressSync = require("weread.lib.progress_sync")
 local ProgressSyncDialog = require("weread.ui.progress_sync_dialog")
 local QRLogin = require("weread.lib.qr_login")
 local ReadReport = require("weread.lib.read_report")
-local Settings = require("weread.lib.settings")
+local KoreaderSettings = require("weread.adapter.koreader_settings")
+local KoreaderDownloaderHost = require("weread.adapter.koreader_downloader_host")
 
 local LOG_MODULE = PluginUtil.LOG_MODULE
 local _ = PluginUtil.tr
@@ -39,9 +39,9 @@ local WeReadPlugin = WidgetContainer:extend{
 
 function WeReadPlugin:init()
     math.randomseed(os.time())
-    self.settings = Settings:new()
+    self.settings = KoreaderSettings.new()
     self.client = Client:new(self.settings, SocketTransport:new())
-    self.downloader = Downloader:new{
+    self.downloader = KoreaderDownloaderHost.new{
         client = self.client,
         settings = self.settings,
         show_info       = function(text) self:showInfo(text) end,
