@@ -56,6 +56,11 @@ set(CRE_SOURCES
 list(TRANSFORM CRE_SOURCES PREPEND "${CRE_DIR}/")
 
 add_library(crbridge SHARED cr_bridge.cpp ${CRE_SOURCES})
+add_executable(cr_test cr_test.cpp)
+target_link_libraries(cr_test PRIVATE crbridge)
+if(WEREADER_KINDLE_DEPS_INC)
+    target_include_directories(cr_test PRIVATE ${WEREADER_KINDLE_DEPS_INC})
+endif()
 
 set(NS_DIR "${TP_DIR}/nanosvg/src")
 

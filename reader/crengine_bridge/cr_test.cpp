@@ -1,6 +1,7 @@
 // Debug harness for the crengine bridge: exercises cr_* functions directly.
 #include <cstdio>
 #include <csignal>
+#include <cstdlib>
 #include <execinfo.h>
 #include <unistd.h>
 
@@ -15,6 +16,8 @@ static void crash_handler(int sig) {
 extern "C" {
 int cr_init(const char *font_dir);
 int cr_open(const char *path, int width, int height, int font_size, const char *font_face);
+int cr_open_layout(const char *path, int width, int height, int font_size,
+    int line_spacing, int margin, const char *font_face);
 int cr_page_count(void);
 int cr_page_text(int page, char *buf, int buf_len);
 int cr_render_page(int page, unsigned char *gray_buf, int width, int height);
@@ -31,7 +34,12 @@ int main(int argc, char **argv) {
     int fonts = cr_init(font_dir);
     fprintf(stderr, "[t] fonts: %d\n", fonts);
     fprintf(stderr, "[t] open\n");
-    int ok = cr_open(doc, 600, 800, 28, nullptr);
+    const char *face = argc > 3 ? argv[3] : nullptr;
+    fprintf(stderr, "[t] face: %s\n", face ? face : "(null)");
+    int ok = argc > 4
+        ? cr_open_layout(doc, atoi(argv[4]), atoi(argv[5]), atoi(argv[6]),
+            atoi(argv[7]), atoi(argv[8]), face)
+        : cr_open(doc, 600, 800, 28, face);
     fprintf(stderr, "[t] open: %d\n", ok);
     if (!ok) return 1;
     fprintf(stderr, "[t] pages: %d\n", cr_page_count());
