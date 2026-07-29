@@ -560,7 +560,12 @@ function build_shelf_grid(scr)
                 title = tostring(book.title or book.bookId),
                 row = row,
             }
-            state.cover_queue[#state.cover_queue + 1] = bookId
+            -- only the first screens' covers are queued up front; deeper
+            -- rows are queued by cover_tick as they scroll into view, so
+            -- a big shelf doesn't burst hundreds of TLS handshakes
+            if row < 6 then
+                state.cover_queue[#state.cover_queue + 1] = bookId
+            end
         end
     end
 
