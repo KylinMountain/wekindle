@@ -1,0 +1,9 @@
+{
+  "items": [
+    {
+      "name": "Wereader",
+      "priority": 1,
+      "action": "launch.sh"
+    }
+  ]
+}

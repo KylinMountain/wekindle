@@ -37,7 +37,11 @@ int curl_easy_getinfo(CURL *curl, int info, ...);
 unsigned int usleep(unsigned int usec);
 ]]
 
-local C = ffi.load("curl")
+-- Load OUR libcurl: on Kindle the rootfs ships a broken /usr/lib/libcurl.so
+-- that gets picked up by ffi.load("curl") (its easy_cleanup segfaults), so
+-- the explicit path wins when provided.
+local curl_path = os.getenv("CURL_TRANSPORT_PATH") or "curl"
+local C = ffi.load(curl_path)
 
 -- CURLOPT constants (CURLOPTTYPE_LONG = 0, OBJECTPOINT = 10000,
 -- FUNCTIONPOINT = 20000). CURLINFO_RESPONSE_CODE = CURLINFO_LONG + 2.
@@ -60,7 +64,7 @@ local CURLOPT = {
 }
 local CURLINFO_RESPONSE_CODE = 0x200002
 
-C.curl_global_init(0)
+C.curl_global_init(3)  -- CURL_GLOBAL_ALL: without SSL init, easy_cleanup dereferences NULL TLS state and segfaults
 
 -- Pending request collectors, keyed by an integer handle id. The write and
 -- header callbacks cannot carry Lua upvalues across the C boundary portably,
@@ -158,6 +162,10 @@ function CurlTransport:roundtrip(req)
         C.curl_easy_setopt(curl, CURLOPT.FOLLOWLOCATION, ffi.cast("long", 0))
         C.curl_easy_setopt(curl, CURLOPT.SSL_VERIFYPEER, ffi.cast("long", 1))
         C.curl_easy_setopt(curl, CURLOPT.SSL_VERIFYHOST, ffi.cast("long", 2))
+        local ca_bundle = os.getenv("CURL_CA_BUNDLE")
+        if ca_bundle and ca_bundle ~= "" then
+            C.curl_easy_setopt(curl, 10065 --[[CURLOPT_CAINFO]], ca_bundle)
+        end
         C.curl_easy_setopt(curl, CURLOPT.NOSIGNAL, ffi.cast("long", 1))
 
         local timeout = req.timeout
@@ -189,7 +197,9 @@ function CurlTransport:roundtrip(req)
             C.curl_easy_setopt(curl, CURLOPT.HTTPHEADER, slist)
         end
 
+        io.stderr:write("[ct] performing...\n")
         local rc = C.curl_easy_perform(curl)
+        io.stderr:write("[ct] performed rc=", tostring(rc), "\n")
         if rc ~= 0 then
             error(ffi.string(C.curl_easy_strerror(rc)))
         end
@@ -197,15 +207,20 @@ function CurlTransport:roundtrip(req)
 
     local code = 0
     if ok then
+        io.stderr:write("[ct] getinfo...\n")
         local out = ffi.new("long[1]")
         C.curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, out)
         code = tonumber(out[0])
+        io.stderr:write("[ct] code=", tostring(code), "\n")
     end
 
     if slist ~= nil then
+        io.stderr:write("[ct] free slist\n")
         C.curl_slist_free_all(slist)
     end
+    io.stderr:write("[ct] cleanup h=", tostring(curl), "\n")
     C.curl_easy_cleanup(curl)
+    io.stderr:write("[ct] done\n")
     pending_bodies[id] = nil
     pending_headers[id] = nil
 

@@ -1,4 +1,4 @@
--- Standalone bootstrap: wires weread-core to the desktop adapters
+-- Standalone bootstrap: wires weread-core to standalone adapters
 -- (libcurl transport, SQLite settings store, pure-Lua ZIP writer,
 -- console UI ports). Shared by cli.lua and, later, the LVGL app.
 
@@ -7,12 +7,17 @@ local Settings = require("weread.lib.settings")
 local Downloader = require("weread.lib.downloader")
 local Content = require("weread.lib.content")
 local SqliteStore = require("sqlite_store")
+local SecretStore = require("secret_store")
 local CurlTransport = require("curl_transport")
 local ZipWriter = require("zip_writer")
 
 local M = {}
 
 local function default_data_dir()
+    if os.getenv("WEREADER_PLATFORM") == "kindle" then
+        return os.getenv("WEREADER_DATA_DIR")
+            or "/mnt/us/extensions/wereader/data"
+    end
     local home = os.getenv("HOME") or "."
     return home .. "/.wereader"
 end
@@ -87,14 +92,41 @@ function M.init(opts)
     opts = opts or {}
     local data_dir = opts.data_dir or default_data_dir()
     os.execute("mkdir -p " .. string.format("%q", data_dir))
+    local device = opts.device
+    if not device and os.getenv("WEREADER_PLATFORM") == "kindle" then
+        device = require("kindle.device"):new{
+            userstore = "/mnt/us",
+        }
+    end
 
     Content.set_zip_writer_factory(function()
         return ZipWriter:new()
     end)
 
+    local store = SqliteStore:new{
+        path = data_dir .. "/wereader.db",
+        -- Kindle user storage is vfat; WAL is intentionally forbidden there.
+        journal_mode = "delete",
+    }
+    local is_kindle = os.getenv("WEREADER_PLATFORM") == "kindle"
+    local secret_dir
+    if is_kindle then
+        secret_dir = os.getenv("WEREADER_SECRET_DIR")
+            or "/var/local/wereader/secrets"
+    else
+        secret_dir = data_dir .. "/secrets"
+    end
+    local secret_store = SecretStore:new{
+        dir = secret_dir,
+        key_material = opts.secret_key_material,
+        device_key_path = is_kindle and "/proc/usid" or nil,
+        require_device_key = is_kindle,
+        forbid_userstore = is_kindle,
+    }
     local settings = Settings:new{
-        store = SqliteStore:new{ path = data_dir .. "/wereader.db" },
+        store = store,
         data_dir = data_dir,
+        secret_store = secret_store,
     }
 
     local transport = CurlTransport:new()
@@ -106,8 +138,16 @@ function M.init(opts)
         client = client,
         settings = settings,
         schedule = schedule,
-        prevent_standby = function() end,
-        allow_standby = function() end,
+        prevent_standby = function(reason)
+            if device then
+                return device:prevent_suspend(reason)
+            end
+        end,
+        allow_standby = function(reason)
+            if device then
+                return device:allow_suspend(reason)
+            end
+        end,
         now_ms = now_ms,
         show_info = function(text) print(text) end,
         show_transient = function(text) print(text) end,
@@ -126,13 +166,27 @@ function M.init(opts)
         show_confirm = function(o) print(o.text) end,
     }
 
-    return {
+    local app = {
         data_dir = data_dir,
         settings = settings,
         client = client,
+        transport = transport,
         downloader = downloader,
+        device = device,
+        now_ms = now_ms,
         drain_tasks = drain,
     }
+    function app:close()
+        if self._closed then
+            return
+        end
+        self._closed = true
+        if self.device then
+            self.device:release_all_suspend_guards()
+        end
+        store:close()
+    end
+    return app
 end
 
 return M
