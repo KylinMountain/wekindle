@@ -12,6 +12,21 @@
 #include <cstdio>
 #include <cstdlib>
 
+#ifdef WEREADER_CRASH_HANDLER
+#include <csignal>
+#include <execinfo.h>
+#include <unistd.h>
+static void cr_crash_handler(int sig) {
+    void *frames[48];
+    int n = backtrace(frames, 48);
+    fprintf(stderr, "\n[crbridge] signal %d caught, backtrace:\n", sig);
+    backtrace_symbols_fd(frames, n, STDERR_FILENO);
+    fsync(STDERR_FILENO);
+    signal(sig, SIG_DFL);
+    raise(sig);  // re-raise so the core dump still happens
+}
+#endif
+
 extern "C" {
 
 struct CrDoc {
@@ -27,6 +42,11 @@ void cr_close(void);
 // Initialize the engine once: every font file in font_dir is registered so
 // CJK-capable fonts are available. Returns the registered font count.
 int cr_init(const char *font_dir) {
+#ifdef WEREADER_CRASH_HANDLER
+    signal(SIGSEGV, cr_crash_handler);
+    signal(SIGBUS, cr_crash_handler);
+    signal(SIGABRT, cr_crash_handler);
+#endif
     InitFontManager(lString8());
     LVContainerRef dir = LVOpenDirectory(lString8(font_dir), U"*.*");
     if (!dir.isNull()) {
