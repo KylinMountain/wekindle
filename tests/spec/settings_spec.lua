@@ -123,6 +123,50 @@ do
     eq(s:is_api_configured(), false, "reset clears api key")
 end
 
+-- 7. Early standalone plaintext credentials migrate into ISecretStore while
+-- the shared KOReader auth schema remains unchanged.
+do
+    local values = {}
+    local versions = {}
+    local secrets = {
+        get = function(_self, account, key)
+            return values[account .. "/" .. key]
+        end,
+        set = function(_self, account, key, value)
+            values[account .. "/" .. key] = value
+            versions[account] = (versions[account] or 0) + 1
+            return true
+        end,
+        delete = function(_self, account, key)
+            values[account .. "/" .. key] = nil
+            return true
+        end,
+        version = function(_self, account)
+            return versions[account] or 0
+        end,
+    }
+    local store = mem_store{
+        auth_schema_version = 1,
+        api_key = "legacy-plaintext",
+        cookies = { wr_gid = "legacy-cookie" },
+    }
+    local s = Settings:new{
+        store = store,
+        secret_store = secrets,
+        data_dir = "/tmp/weread-settings-test",
+        ensure_dir = function() end,
+    }
+    eq(s:get("api_key"), "legacy-plaintext", "migrated API key readable")
+    eq(s:get("cookies").wr_gid, "legacy-cookie", "migrated cookie readable")
+    eq(store._data.api_key, nil, "plaintext API key row removed")
+    eq(store._data.cookies, nil, "plaintext cookie row removed")
+    eq(store._data.secret_store_schema_version,
+        Settings.SECRET_STORE_SCHEMA_VERSION, "secret schema version stored")
+    s:reset_account()
+    eq(s:get("api_key"), "", "vault API key reset")
+    eq(s:get("cookies").wr_gid, nil, "vault cookies reset")
+end
+
 print(string.format("settings_spec: %d checks, %d failure(s)", checks, failures))
 if failures > 0 then
     os.exit(1)

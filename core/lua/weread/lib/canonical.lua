@@ -68,6 +68,10 @@ local function textmap_path(dir, uid)
     return dir .. "/chapters/" .. uid .. ".textmap.json"
 end
 
+local function annotation_path(dir, uid)
+    return dir .. "/annotations/" .. uid .. ".json"
+end
+
 -- -------------------------------------------------------- offset mapping
 
 -- Map a raw-HTML character position through an edit list (see
@@ -208,6 +212,22 @@ function Canonical.write_catalog(settings, book, chapters)
     }))
 end
 
+-- Load a previously cached catalog for offline reading.
+function Canonical.read_catalog(settings, book)
+    local dir = Canonical.book_dir(settings, book.book_id or book.bookId)
+    local raw = read_file(dir .. "/catalog.json")
+    if not raw then
+        return nil, "catalog_not_cached"
+    end
+    local ok, payload = pcall(json.decode, raw)
+    if not ok or type(payload) ~= "table"
+        or type(payload.chapters) ~= "table"
+        or #payload.chapters == 0 then
+        return nil, "catalog_invalid"
+    end
+    return payload.chapters
+end
+
 function Canonical.write_metadata(settings, book)
     local dir = Canonical.book_dir(settings, book.book_id or book.bookId)
     ensure_dir(dir)
@@ -235,6 +255,9 @@ function Canonical.ensure_chapter(client, settings, book, chapter, state, opts)
     local dir = Canonical.book_dir(settings, book_id)
     local final_path = chapter_path(dir, uid)
     if Canonical.has_chapter(settings, book, chapter) then
+        if opts.fetch_annotations and client then
+            Canonical.ensure_annotations(client, settings, book, chapter)
+        end
         return final_path, textmap_path(dir, uid)
     end
 
@@ -310,21 +333,7 @@ function Canonical.ensure_chapter(client, settings, book, chapter, state, opts)
 
     -- 6. optional raw annotations for export-time injection
     if opts.fetch_annotations and client then
-        local Thoughts = require("weread.lib.thoughts")
-        local ok_ul, underlines_data, ranges = Thoughts.fetch_underlines(client, settings, book_id, chapter.chapterUid)
-        if ok_ul and type(underlines_data) == "table" then
-            local reviews = {}
-            if #ranges > 0 then
-                local ok_rv, result = client:get_chapter_reviews(book_id, chapter.chapterUid, ranges)
-                if ok_rv and type(result) == "table" and type(result.reviews) == "table" then
-                    reviews = result.reviews
-                end
-            end
-            Canonical.write_annotations(settings, book, chapter, {
-                underlines_data = underlines_data,
-                reviews = reviews,
-            })
-        end
+        Canonical.ensure_annotations(client, settings, book, chapter)
     end
     return final_path, textmap_path(dir, uid)
 end
@@ -346,7 +355,100 @@ function Canonical.write_annotations(settings, book, chapter, payload)
     local dir = Canonical.book_dir(settings, book.book_id or book.bookId)
     ensure_dir(dir .. "/annotations")
     local uid = tostring(chapter.chapterUid)
-    return write_atomic(dir .. "/annotations/" .. uid .. ".json", json.encode(payload))
+    return write_atomic(annotation_path(dir, uid), json.encode(payload))
+end
+
+-- Fetch annotations independently from chapter content. This is deliberately
+-- idempotent: enabling annotations after a book was cached must not redownload
+-- the chapter, while an existing annotation snapshot is usable offline.
+function Canonical.ensure_annotations(client, settings, book, chapter, force)
+    local book_id = book.book_id or book.bookId
+    local uid = tostring(chapter.chapterUid)
+    local dir = Canonical.book_dir(settings, book_id)
+    if not force and read_file(annotation_path(dir, uid)) then
+        return annotation_path(dir, uid), "cache"
+    end
+    if not client then
+        return nil, "client_required"
+    end
+    local Thoughts = require("weread.lib.thoughts")
+    local ok_ul, underlines_data, ranges = Thoughts.fetch_underlines(
+        client, settings, book_id, chapter.chapterUid)
+    if not ok_ul or type(underlines_data) ~= "table" then
+        return nil, ranges or "underlines_unavailable"
+    end
+    local reviews = {}
+    if type(ranges) == "table" and #ranges > 0 then
+        local ok_rv, result = client:get_chapter_reviews(
+            book_id, chapter.chapterUid, ranges)
+        if ok_rv and type(result) == "table"
+            and type(result.reviews) == "table" then
+            reviews = result.reviews
+        end
+    end
+    local ok, err = Canonical.write_annotations(settings, book, chapter, {
+        underlines_data = underlines_data,
+        reviews = reviews,
+    })
+    if not ok then
+        return nil, err
+    end
+    return annotation_path(dir, uid), "online"
+end
+
+-- Return an XHTML file suitable for the native reader. The canonical chapter
+-- remains immutable; annotations are materialized into a derived file so the
+-- user can toggle them without corrupting the clean cache or EPUB export.
+function Canonical.reading_chapter_path(settings, book, chapter, opts)
+    opts = opts or {}
+    local book_id = book.book_id or book.bookId
+    local uid = tostring(chapter.chapterUid)
+    local dir = Canonical.book_dir(settings, book_id)
+    local clean_path = chapter_path(dir, uid)
+    if not opts.annotations then
+        return clean_path, "clean"
+    end
+
+    local document = read_file(clean_path)
+    local payload_raw = read_file(annotation_path(dir, uid))
+    local raw_doc = read_file(dir .. "/chapters/" .. uid .. ".raw.xhtml")
+    local textmap_raw = read_file(textmap_path(dir, uid))
+    if not document or not payload_raw or not raw_doc or not textmap_raw then
+        return clean_path, "clean"
+    end
+    local ok_payload, payload = pcall(json.decode, payload_raw)
+    local ok_map, textmap = pcall(json.decode, textmap_raw)
+    if not ok_payload or type(payload) ~= "table"
+        or not ok_map or type(textmap) ~= "table" then
+        return clean_path, "clean"
+    end
+    local prefix, fragment, suffix =
+        document:match("^(.-<body[^>]*>)(.*)(</body>.*)$")
+    if not fragment then
+        return clean_path, "clean"
+    end
+    local Annotations = require("weread.lib.annotations")
+    local Thoughts = require("weread.lib.thoughts")
+    local injected, annotation_css = Canonical._inject_annotations(
+        Annotations, fragment, raw_doc, textmap, payload, book_id, uid)
+    if not injected then
+        return clean_path, "clean"
+    end
+
+    ensure_dir(dir .. "/derived")
+    local css = read_file(dir .. "/styles/normalized.css")
+    if annotation_css and annotation_css ~= "" then
+        css = Thoughts.merge_css(css, annotation_css)
+    end
+    write_atomic(dir .. "/styles/reader-annotations.css", css or "")
+    prefix = prefix:gsub(
+        "%.%.%/styles/normalized%.css", "../styles/reader-annotations.css")
+    local derived_path = dir .. "/derived/" .. uid .. ".annotated.xhtml"
+    local ok, err = write_atomic(derived_path, prefix .. injected .. suffix)
+    if not ok then
+        return clean_path, "clean", err
+    end
+    return derived_path, "annotated"
 end
 
 -- Remap stored annotation ranges (raw coordinates) onto the canonical

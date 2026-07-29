@@ -1,0 +1,5 @@
+# name|repository|commit|license|codeload_tarball_sha256
+FBInk|https://github.com/NiLuJe/FBInk.git|83110d3d278cf9cd44cc1d16237e284a89f72633|GPL-3.0-or-later|ac3733e92a7eece7a05659c2023324c6cc4258688c74663974df2494dea3b774
+LVGL|https://github.com/lvgl/lvgl.git|933b2352bfec08b231e289546286aa0ef63d5ef8|MIT|3d3d719f8d83cc9fdff7fc958bff0a1c7f16ff177239b2a1d23f8118c9028282
+crengine|https://github.com/koreader/crengine.git|0fd3bc414d2f29211d978e2957907f5bb375acdf|GPL-2.0-or-later|15d3a6edc415033559e1c073e883913db4fa36fed0e588830cadd3f5c6122c84
+coolreader|https://github.com/buggins/coolreader.git|dcc2d4c88b7ee66b8ee1223833c1a72cad3cdbc5|GPL-2.0-or-later|391c63ed55b6014edf7312d6d2ea323a5c95404253a0232f5d00ea2849aa0731

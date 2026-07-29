@@ -1,0 +1,151 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+  schedule:
+    - cron: "23 2 * * *"
+
+jobs:
+  core:
+    name: Lua core and standalone adapters
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install runtime dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y luajit libcurl4-openssl-dev libsqlite3-dev \
+            default-jre-headless unzip cmake ninja-build build-essential \
+            pkg-config libfreetype6-dev libharfbuzz-dev libfribidi-dev \
+            libpng-dev libjpeg-dev libzstd-dev libunibreak-dev \
+            libfontconfig1-dev libxxhash-dev gettext fonts-noto-cjk
+
+      - name: Build the real crengine bridge from locked sources
+        run: tools/build/build_crbridge.sh
+
+      - name: Check tracked Lua syntax
+        run: |
+          git ls-files -z '*.lua' | while IFS= read -r -d '' file; do
+            luajit -b "$file" /tmp/luajit-check.out
+          done
+
+      - name: Check shell and Python tooling
+        run: |
+          git ls-files -z '*.sh' | xargs -0 -n1 sh -n
+          git ls-files -z '*.py' | xargs -0 python3 -m py_compile
+
+      - name: Scan tracked files for credentials
+        run: python3 tools/security/secret_scan.py --root .
+
+      - name: Run unit tests
+        env:
+          CR_TEST_FONT_DIR: /usr/share/fonts/opentype/noto
+          CR_TEST_FONT_FACE: Noto Sans CJK SC
+        run: tests/run_all.sh
+
+      - name: Run standalone stack smoke test
+        run: tests/run_smoke.sh
+
+      - name: Validate exported EPUB with official EPUBCheck
+        run: |
+          SOURCE_DATE_EPOCH=315532800 \
+            luajit tools/validation/build_epub_fixture.lua /tmp/validation.epub
+          tools/validation/run_epubcheck.sh /tmp/validation.epub
+
+  kindle-host:
+    name: Pinned Kindle host native build
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install native build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake ninja-build build-essential \
+            libfreetype6-dev libpng-dev libjpeg-dev
+
+      - name: Build FBInk and LVGL host against locked revisions
+        run: tools/build/build_kindle_host.sh linux
+
+      - name: Check bridge API surface
+        run: tests/check_kindle_host_syntax.sh
+
+  ui-snapshot:
+    name: Linux LVGL startup snapshot
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install UI runtime dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake ninja-build build-essential luajit \
+            libsdl2-dev libfreetype6-dev libcurl4-openssl-dev \
+            libsqlite3-dev fonts-noto-cjk
+
+      - name: Checkout locked LVGL
+        run: |
+          mkdir -p third_party/src
+          git clone --filter=blob:none --no-checkout \
+            https://github.com/lvgl/lvgl.git third_party/src/lvgl
+          git -C third_party/src/lvgl fetch --depth 1 origin \
+            933b2352bfec08b231e289546286aa0ef63d5ef8
+          git -C third_party/src/lvgl checkout --detach \
+            933b2352bfec08b231e289546286aa0ef63d5ef8
+
+      - name: Build LVGL and startup-only reader stub
+        run: |
+          cmake -G Ninja -S platform/linux/lvgl_build \
+            -B platform/linux/lvgl_build/build
+          cmake --build platform/linux/lvgl_build/build
+          mkdir -p reader/crengine_bridge/build
+          cc -shared -fPIC tests/native_stubs/crbridge_stub.c \
+            -o reader/crengine_bridge/build/libcrbridge.so
+
+      - name: Capture deterministic startup state
+        env:
+          SDL_VIDEODRIVER: dummy
+          CR_FONT_DIR: /usr/share/fonts/opentype/noto
+          CR_FONT_PATH: /usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc
+        run: tools/validation/capture_ui_snapshot.sh /tmp/standalone-selftest.pgm
+
+      - name: Upload snapshot
+        uses: actions/upload-artifact@v4
+        with:
+          name: standalone-ui-snapshot
+          path: /tmp/standalone-selftest.pgm
+
+  protocol-canary:
+    name: Read-only protocol schema canary
+    if: github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install runtime dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y luajit libcurl4-openssl-dev libsqlite3-dev
+
+      - name: Check configured account without logging payloads
+        env:
+          WEREADER_CANARY_API_KEY: ${{ secrets.WEREADER_CANARY_API_KEY }}
+          WEREADER_CANARY_BOOK_ID: ${{ secrets.WEREADER_CANARY_BOOK_ID }}
+        run: |
+          if [ -z "$WEREADER_CANARY_API_KEY" ]; then
+            echo "canary skipped: repository secret not configured"
+            exit 0
+          fi
+          luajit tools/canary/protocol_canary.lua

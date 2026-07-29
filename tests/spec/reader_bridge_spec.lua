@@ -2,8 +2,10 @@
 -- page count / page text / page rendering. Skips cleanly when libcrbridge
 -- or a CJK font is not available (e.g. minimal CI).
 
+local ffi = require("ffi")
+local suffix = ffi.os == "OSX" and ".dylib" or ".so"
 local lib_path = os.getenv("CRBRIDGE_PATH")
-    or "reader/crengine_bridge/build/libcrbridge.dylib"
+    or ("reader/crengine_bridge/build/libcrbridge" .. suffix)
 
 if not io.open(lib_path, "rb") then
     print("reader_bridge_spec: SKIP (libcrbridge not built; run tools/build/build_crbridge.sh)")

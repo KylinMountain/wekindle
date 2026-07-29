@@ -96,7 +96,8 @@ secrets:version(account_id) -> number
 
 - 独立 Host 实现必须位于 rootfs ext 分区（非 `/mnt/us`），`0600`/`0700`，
   并用设备序列号派生密钥静态加密（设计文档 §12.1）。
-- 允许写入的 key 白名单：`wr_skey`、`wr_rt`、`wr_vid`、`wr_ticket`、`api_key`、`x-wrpa-*`。
+- 允许写入的逻辑 key 白名单：`cookies`（仅登录 Cookie 集合）、
+  `wr_ticket`、`wr_wrpa`、`api_key`。实现不得接受任意文件名或任意 key。
 
 ## IScheduler
 

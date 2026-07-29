@@ -175,7 +175,8 @@ local function item_id(prefix, value)
 end
 
 local function utc_modified()
-    return os.date("!%Y-%m-%dT%H:%M:%SZ")
+    local epoch = tonumber(os.getenv("SOURCE_DATE_EPOCH")) or os.time()
+    return os.date("!%Y-%m-%dT%H:%M:%SZ", epoch)
 end
 
 local function media_type_for(data)
@@ -277,7 +278,7 @@ local function write_epub(path, entries)
         error("failed to open archive for writing: " .. tostring(archive.err))
     end
 
-    local mtime = os.time()
+    local mtime = tonumber(os.getenv("SOURCE_DATE_EPOCH")) or os.time()
 
     archive:setZipCompression("store")
     local mimetype_data = "application/epub+zip"

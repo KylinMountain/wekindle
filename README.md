@@ -12,7 +12,8 @@ apps/
   koreader-plugin/   现有 KOReader 插件（vendored 自 finlater/weread.koplugin，
                      AGPL-3.0，作为 weread-core 的 KOReader 适配器）
   standalone/        独立应用：cli.lua（命令行）、app.lua（LVGL 图形界面）、
-                     bootstrap.lua（适配器装配）、login.lua（QR 登录流）
+                     bootstrap.lua（适配器装配）、login.lua（QR 登录流）、
+                     book_service.lua / reader_session.lua（应用用例）
 platform/
   standalone/        libcurl/SQLite/ZIP/QR 的 LuaJIT FFI 适配器
   linux/             LVGL + crengine 桥（reader_bridge.lua、lv.lua）
@@ -33,7 +34,7 @@ docs/                设计文档
 
 ```sh
 # Lua 层测试只需要 luajit（brew install luajit）
-tests/run_all.sh          # 单元测试（17 个 spec）
+tests/run_all.sh          # 单元及阅读集成测试（20 个 spec）
 tests/run_smoke.sh        # stub server 端到端冒烟
 
 # crengine 桥（libcrbridge）依赖 cmake/ninja 与 brew 库：
@@ -55,7 +56,7 @@ luajit apps/standalone/cli.lua download <book_id>
 luajit apps/standalone/cli.lua cache <book_id>
 luajit apps/standalone/cli.lua export <book_id> out.epub
 
-# LVGL 图形界面（登录 → 书架 → 阅读）
+# LVGL 图形界面（登录 → 书架/搜索/详情 → 缓存或导出 → 跨章阅读）
 luajit apps/standalone/app.lua
 luajit apps/standalone/app.lua --selftest   # CI 启动自检（300 帧后退出）
 

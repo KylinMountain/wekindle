@@ -7,6 +7,8 @@ local ffi = require("ffi")
 ffi.cdef[[
 int cr_init(const char *font_dir);
 int cr_open(const char *path, int width, int height, int font_size, const char *font_face);
+int cr_open_layout(const char *path, int width, int height, int font_size,
+    int line_spacing, int margin, const char *font_face);
 int cr_page_count(void);
 int cr_page_text(int page, char *buf, int buf_len);
 int cr_render_page(int page, unsigned char *gray_buf, int width, int height);
@@ -19,7 +21,9 @@ local ReaderBridge = {}
 
 local lib_path = arg and arg.crbridge_path
     or os.getenv("CRBRIDGE_PATH")
-    or "reader/crengine_bridge/build/libcrbridge.dylib"
+    or (ffi.os == "OSX"
+        and "reader/crengine_bridge/build/libcrbridge.dylib"
+        or "reader/crengine_bridge/build/libcrbridge.so")
 
 local lib = ffi.load(lib_path)
 
@@ -29,10 +33,12 @@ end
 
 function ReaderBridge.open(path, opts)
     opts = opts or {}
-    return lib.cr_open(path,
+    return lib.cr_open_layout(path,
         opts.width or 600,
         opts.height or 800,
         opts.font_size or 26,
+        opts.line_spacing or 120,
+        opts.margin or 24,
         opts.font_face) == 1
 end
 

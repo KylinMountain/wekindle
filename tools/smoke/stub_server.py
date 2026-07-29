@@ -29,7 +29,7 @@ class Handler(BaseHTTPRequestHandler):
         body = self.rfile.read(length) if length else b""
         if self.path == "/web/login/renewal":
             self._send_json({"succ": 1, "vid": 424242}, extra_headers={
-                "Set-Cookie": "wr_gid=renewed-gid-123; Path=/; HttpOnly",
+                "Set-Cookie": "wr_gid=test-renewed-gid-123; Path=/; HttpOnly",
             })
             return
         if self.path == "/api/agent/gateway":

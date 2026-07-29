@@ -201,6 +201,41 @@ print('annotated export OK')
     local out2_text = py2:read("a")
     ok(py2:close() and out2_text:find("annotated export OK", 1, true) ~= nil,
         "annotation injection in exported epub: " .. tostring(out2_text))
+
+    local reader_path, reader_variant =
+        Canonical.reading_chapter_path(settings, book, chapter, {
+            annotations = true,
+        })
+    eq(reader_variant, "annotated", "native reader uses derived annotation view")
+    ok(reader_path:find("/derived/11.annotated.xhtml", 1, true) ~= nil,
+        "derived reader path")
+    local reader_file = io.open(reader_path, "rb")
+    local reader_doc = reader_file and reader_file:read("a") or ""
+    if reader_file then reader_file:close() end
+    ok(reader_doc:find("wr%-underline") ~= nil,
+        "derived reader XHTML contains underline")
+    ok(reader_doc:find("reader%-annotations%.css") ~= nil,
+        "derived reader XHTML links merged CSS")
+    local clean_path, clean_variant =
+        Canonical.reading_chapter_path(settings, book, chapter, {
+            annotations = false,
+        })
+    eq(clean_path, path, "annotation toggle returns immutable canonical chapter")
+    eq(clean_variant, "clean", "clean reader variant")
+end
+
+-- 9. catalog round-trip supports offline chapter selection.
+do
+    local chapters = {
+        chapter,
+        { chapterUid = 22, title = "第二章" },
+    }
+    local wrote, write_err = Canonical.write_catalog(settings, book, chapters)
+    ok(wrote, "catalog written: " .. tostring(write_err))
+    local cached, read_err = Canonical.read_catalog(settings, book)
+    ok(cached ~= nil, "catalog read: " .. tostring(read_err))
+    eq(#cached, 2, "cached catalog chapter count")
+    eq(cached[2].chapterUid, 22, "cached catalog chapter uid")
 end
 
 os.execute("rm -rf " .. ROOT)

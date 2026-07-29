@@ -22,6 +22,5 @@ find_package(SDL2 REQUIRED)
 target_include_directories(lvgl PRIVATE ${SDL2_INCLUDE_DIRS})
 target_link_libraries(lvgl PUBLIC ${SDL2_LIBRARIES})
 
-target_include_directories(lvgl PRIVATE /opt/homebrew/opt/freetype/include/freetype2)
-target_link_directories(lvgl PUBLIC /opt/homebrew/opt/freetype/lib)
-target_link_libraries(lvgl PUBLIC freetype)
+find_package(Freetype REQUIRED)
+target_link_libraries(lvgl PUBLIC Freetype::Freetype)

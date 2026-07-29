@@ -1,0 +1,7 @@
+# Packaging-structure fixture only; release builds must provide hashes for the
+# exact target binaries/sources in KINDLE_RUNTIME_DIR.
+LuaJIT|https://github.com/LuaJIT/LuaJIT.git|fixture-luajit|MIT|1111111111111111111111111111111111111111111111111111111111111111
+libcurl|https://github.com/curl/curl.git|fixture-libcurl|curl|2222222222222222222222222222222222222222222222222222222222222222
+SQLite|https://github.com/sqlite/sqlite.git|fixture-sqlite|blessing|3333333333333333333333333333333333333333333333333333333333333333
+minisign|https://github.com/jedisct1/minisign.git|fixture-minisign|ISC|4444444444444444444444444444444444444444444444444444444444444444
+NotoSansCJK|https://github.com/notofonts/noto-cjk.git|fixture-font|OFL-1.1|5555555555555555555555555555555555555555555555555555555555555555

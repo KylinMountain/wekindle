@@ -48,7 +48,8 @@ int cr_init(const char *font_dir) {
     return fontMan->GetFontCount();
 }
 
-int cr_open(const char *path, int width, int height, int font_size, const char *font_face) {
+int cr_open_layout(const char *path, int width, int height, int font_size,
+                   int line_spacing, int margin, const char *font_face) {
     cr_close();
     CrDoc *doc = new CrDoc();
     doc->view = new LVDocView(32, true);  // noDefaultDocument
@@ -61,6 +62,13 @@ int cr_open(const char *path, int width, int height, int font_size, const char *
         return 0;
     }
     doc->view->setFontSize(font_size);
+    if (line_spacing < 90) line_spacing = 90;
+    if (line_spacing > 180) line_spacing = 180;
+    doc->view->setDefaultInterlineSpace(line_spacing);
+    if (margin < 0) margin = 0;
+    if (margin > width / 3) margin = width / 3;
+    if (margin > height / 3) margin = height / 3;
+    doc->view->setPageMargins(lvRect(margin, margin, margin, margin));
     doc->view->setViewMode(DVM_PAGES, 1);
     if (font_face && font_face[0]) {
         doc->view->setDefaultFontFace(lString8(font_face));
@@ -71,6 +79,10 @@ int cr_open(const char *path, int width, int height, int font_size, const char *
     doc->view->Render(width, height);
     g_doc = doc;
     return 1;
+}
+
+int cr_open(const char *path, int width, int height, int font_size, const char *font_face) {
+    return cr_open_layout(path, width, height, font_size, 120, 24, font_face);
 }
 
 int cr_page_count(void) {

@@ -1,0 +1,15 @@
+environment=macOS arm64 desktop reference
+date=2026-07-28
+command=CR_FONT_DIR=/tmp/cr-fonts tools/perf/run_perf_smoke.sh
+cold_start_selftest_ms=3712.92
+cached_open_ms=15.76
+page_render_median_ms=0.34
+page_count=121
+rss_kb=30944
+page_network_requests=0
+threshold_cold_start_ms=4000
+threshold_cached_open_ms=3000
+threshold_page_median_ms=300
+threshold_rss_kb=98304
+result=pass
+note=Desktop evidence only; Kindle results must be recorded per device matrix.

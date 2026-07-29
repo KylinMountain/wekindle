@@ -31,7 +31,7 @@ int main(int argc, char **argv) {
     int fonts = cr_init(font_dir);
     fprintf(stderr, "[t] fonts: %d\n", fonts);
     fprintf(stderr, "[t] open\n");
-    int ok = cr_open(doc, 600, 800, 28);
+    int ok = cr_open(doc, 600, 800, 28, nullptr);
     fprintf(stderr, "[t] open: %d\n", ok);
     if (!ok) return 1;
     fprintf(stderr, "[t] pages: %d\n", cr_page_count());

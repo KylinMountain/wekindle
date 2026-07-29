@@ -11,6 +11,15 @@ local Cookie = require("weread.lib.cookie")
 local Settings = {}
 Settings.__index = Settings
 Settings.AUTH_SCHEMA_VERSION = 1
+Settings.SECRET_STORE_SCHEMA_VERSION = 1
+
+local sensitive_keys = {
+    api_key = true,
+    cookies = true,
+    wr_ticket = true,
+    wr_wrpa = true,
+}
+local active_account = "active"
 
 local defaults = {
     auth_schema_version = Settings.AUTH_SCHEMA_VERSION,
@@ -79,17 +88,24 @@ local function default_ensure_dir(path)
     os.execute("mkdir -p " .. string.format("%q", path))
 end
 
-local function clear_auth_store(store)
-    store:saveSetting("api_key", "")
-    store:saveSetting("cookies", {})
-    store:saveSetting("wr_ticket", "")
-    store:saveSetting("wr_wrpa", "")
+local function clear_auth_store(store, secret_store)
+    for key in pairs(sensitive_keys) do
+        if secret_store then
+            secret_store:delete(active_account, key)
+            if type(store.delSetting) == "function" then
+                store:delSetting(key)
+            end
+        else
+            store:saveSetting(key, deepcopy(defaults[key]))
+        end
+    end
     store:saveSetting("account", deepcopy(defaults.account))
 end
 
 -- opts = {
 --   store      -- required KV store port (readSetting/saveSetting/flush)
 --   data_dir   -- required base directory for book data
+--   secret_store -- optional ISecretStore; standalone hosts must provide it
 --   ensure_dir -- optional function(path); defaults to `mkdir -p`
 -- }
 function Settings:new(opts)
@@ -108,6 +124,7 @@ function Settings:new(opts)
         data_dir = data_dir,
         default_cache_dir = data_dir .. "/cache",
         store = opts.store,
+        secret_store = opts.secret_store,
         ensure_dir = ensure_dir,
     }
     -- cache_dir is the download root; defaults to <data_dir>/cache unless overridden.
@@ -164,14 +181,35 @@ function Settings:new(opts)
             legacy_changed = true
         end
     end
-    local stored_auth_version = tonumber(obj.store:readSetting("auth_schema_version", 0)) or 0
+    local stored_auth_version =
+        tonumber(obj.store:readSetting("auth_schema_version", 0)) or 0
     if stored_auth_version < Settings.AUTH_SCHEMA_VERSION then
         -- Authentication before schema v1 may have come from legacy manual
         -- flows and has no reliable QR account provenance.
         -- Invalidate only credentials; books, downloads and user preferences
         -- remain intact and the UI will guide the user through a fresh QR login.
-        clear_auth_store(obj.store)
+        clear_auth_store(obj.store, obj.secret_store)
         obj.store:saveSetting("auth_schema_version", Settings.AUTH_SCHEMA_VERSION)
+        legacy_changed = true
+    end
+    local stored_secret_version =
+        tonumber(obj.store:readSetting("secret_store_schema_version", 0)) or 0
+    if obj.secret_store
+        and stored_secret_version < Settings.SECRET_STORE_SCHEMA_VERSION then
+        -- Early standalone builds persisted credentials in the main settings
+        -- DB. Move them into the protected vault and delete plaintext rows.
+        for key in pairs(sensitive_keys) do
+            local value = obj.store:readSetting(key, nil)
+            if value ~= nil then
+                obj.secret_store:set(active_account, key, value)
+            end
+            if type(obj.store.delSetting) == "function" then
+                obj.store:delSetting(key)
+            end
+        end
+        obj.store:saveSetting(
+            "secret_store_schema_version",
+            Settings.SECRET_STORE_SCHEMA_VERSION)
         legacy_changed = true
     end
     if legacy_changed then
@@ -183,6 +221,13 @@ end
 function Settings:get(key, default)
     if default == nil then
         default = defaults[key]
+    end
+    if self.secret_store and sensitive_keys[key] then
+        local value = self.secret_store:get(active_account, key)
+        if value == nil then
+            return deepcopy(default)
+        end
+        return deepcopy(value)
     end
     if key ~= "books" then
         return self.store:readSetting(key, deepcopy(default))
@@ -196,6 +241,14 @@ function Settings:get(key, default)
 end
 
 function Settings:set(key, value)
+    if self.secret_store and sensitive_keys[key] then
+        if value == nil then
+            self.secret_store:delete(active_account, key)
+        else
+            self.secret_store:set(active_account, key, deepcopy(value))
+        end
+        return
+    end
     if key == "books" and type(value) == "table" then
         local indexes = {}
         for book_id, book in pairs(value) do
@@ -291,7 +344,7 @@ function Settings:set_download_dir(path)
 end
 
 function Settings:reset_account()
-    clear_auth_store(self.store)
+    clear_auth_store(self.store, self.secret_store)
     self:flush()
 end
 

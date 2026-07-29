@@ -9,6 +9,7 @@ local base = "http://127.0.0.1:" .. port
 local Client = require("weread.lib.client")
 local Settings = require("weread.lib.settings")
 local SqliteStore = require("sqlite_store")
+local SecretStore = require("secret_store")
 local CurlTransport = require("curl_transport")
 
 local failures, checks = 0, 0
@@ -30,16 +31,24 @@ local function ok(cond, label)
 end
 
 local db_path = "/tmp/weread-smoke.db"
+local secret_dir = "/tmp/weread-smoke-secrets"
 os.remove(db_path)
+os.remove(secret_dir .. "/vault.json")
 
 local store = SqliteStore:new{ path = db_path }
+local secrets = SecretStore:new{
+    dir = secret_dir,
+    key_material = "smoke-reference-device",
+    forbid_userstore = false,
+}
 local settings = Settings:new{
     store = store,
+    secret_store = secrets,
     data_dir = "/tmp/weread-smoke-data",
     ensure_dir = function() end,
 }
 settings:update_auth{
-    cookies = { wr_gid = "initial-gid-123", wr_vid = "424242" },
+    cookies = { wr_gid = "test-initial-gid-123", wr_vid = "424242" },
     api_key = "smoke-api-key",
 }
 
@@ -57,13 +66,14 @@ local info = client:get_book_info("smoke-book-1")
 eq(info.title, "冒烟测试之书", "gateway /book/info round-trip")
 eq(info.author, "测试作者", "utf-8 payload intact")
 
--- 2. Cookie renewal over real HTTP; new cookie persisted into SQLite.
+-- 2. Cookie renewal over real HTTP; the new cookie is durable but absent
+-- from the ordinary SQLite settings database.
 client:renew_cookie()
-eq(settings:get("cookies").wr_gid, "renewed-gid-123", "renewal cookie stored in settings")
+eq(settings:get("cookies").wr_gid, "test-renewed-gid-123", "renewal cookie stored in settings")
 
 local store2 = SqliteStore:new{ path = db_path }
-local persisted = store2:readSetting("cookies", {})
-eq(persisted.wr_gid, "renewed-gid-123", "cookie durable in SQLite (fresh connection)")
+eq(store2:readSetting("cookies", nil), nil,
+    "credential plaintext absent from SQLite")
 store2:close()
 
 -- 3. Authenticated GET: stub requires the Cookie header, proving it was sent.
@@ -86,6 +96,11 @@ os.remove("/tmp/weread-smoke-empty.db")
 -- 5. Settings survive a full rebuild (durability across "restarts").
 local settings2 = Settings:new{
     store = SqliteStore:new{ path = db_path },
+    secret_store = SecretStore:new{
+        dir = secret_dir,
+        key_material = "smoke-reference-device",
+        forbid_userstore = false,
+    },
     data_dir = "/tmp/weread-smoke-data",
     ensure_dir = function() end,
 }
@@ -93,6 +108,8 @@ eq(settings2:get("api_key"), "smoke-api-key", "api_key durable")
 eq(settings2:is_cookie_configured(), true, "login state durable")
 
 os.remove(db_path)
+os.remove(secret_dir .. "/vault.json")
+os.execute("rmdir " .. secret_dir .. " 2>/dev/null")
 print(string.format("smoke_stack: %d checks, %d failure(s)", checks, failures))
 if failures > 0 then
     os.exit(1)

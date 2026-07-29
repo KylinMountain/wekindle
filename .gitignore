@@ -8,3 +8,5 @@ dist/
 third_party/src/
 reader/crengine_bridge/build/
 platform/linux/lvgl_build/build/
+__pycache__/
+*.pyc

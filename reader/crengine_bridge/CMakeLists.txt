@@ -57,24 +57,55 @@ list(TRANSFORM CRE_SOURCES PREPEND "${CRE_DIR}/")
 
 add_library(crbridge SHARED cr_bridge.cpp ${CRE_SOURCES})
 
-set(HB /opt/homebrew/opt)
 set(NS_DIR "${TP_DIR}/nanosvg/src")
+
+# Kindle cross-build: device-pulled KOReader libs + source headers, no
+# pkg-config. Activated by -DWEREADER_KINDLE_LIBS=<dir> and
+# -DWEREADER_KINDLE_DEPS_INC=<dir1;dir2;...>
+if(WEREADER_KINDLE_LIBS)
+    target_include_directories(crbridge PRIVATE
+        "${CRE_DIR}/include"
+        "${NS_DIR}"
+        "${TP_DIR}/antiword"
+        "${TP_DIR}/chmlib/src"
+        ${WEREADER_KINDLE_DEPS_INC}
+    )
+    target_compile_definitions(crbridge PRIVATE
+        _LINUX
+        USE_FREETYPE=1
+        USE_HARFBUZZ=1
+        USE_FRIBIDI=1
+        USE_LIBUNIBREAK=1
+        USE_ZSTD=1
+        USE_NANOSVG=1
+        USE_FONTCONFIG=0
+        COLOR_BACKBUFFER=1
+        LDOM_USE_OWN_MEM_MAN=1
+        NDEBUG=1
+    )
+    target_compile_options(crbridge PRIVATE -O2 -include sys/time.h)
+    target_link_directories(crbridge PRIVATE "${WEREADER_KINDLE_LIBS}")
+    target_link_libraries(crbridge PRIVATE
+        "${TP_DIR}/antiword/build/libantiword.a"
+        "${TP_DIR}/chmlib/build/libchmlib.a"
+        freetype
+        harfbuzz
+        fribidi
+        png16
+        jpeg
+        z
+        zstd
+        unibreak
+        xxhash
+    )
+    return()
+endif()
+
 target_include_directories(crbridge PRIVATE
     "${CRE_DIR}/include"
     "${NS_DIR}"
     "${TP_DIR}/antiword"
     "${TP_DIR}/chmlib/src"
-    "${HB}/gettext/include"
-    "${HB}/harfbuzz/include/harfbuzz"
-    "${HB}/fribidi/include/fribidi"
-    "${HB}/fribidi/include"
-    "${HB}/freetype/include/freetype2"
-    "${HB}/libpng/include"
-    "${HB}/jpeg-turbo/include"
-    "${HB}/libunibreak/include"
-    "${HB}/zstd/include"
-    "${HB}/fontconfig/include"
-    "${HB}/xxhash/include"
 )
 
 target_compile_definitions(crbridge PRIVATE
@@ -92,31 +123,33 @@ target_compile_definitions(crbridge PRIVATE
 )
 target_compile_options(crbridge PRIVATE -O2 -include sys/time.h)
 
-target_link_directories(crbridge PRIVATE
-    "${HB}/gettext/lib"
-    "${HB}/harfbuzz/lib"
-    "${HB}/fribidi/lib"
-    "${HB}/freetype/lib"
-    "${HB}/libpng/lib"
-    "${HB}/jpeg-turbo/lib"
-    "${HB}/libunibreak/lib"
-    "${HB}/zstd/lib"
-    "${HB}/fontconfig/lib"
-    "${HB}/xxhash/lib"
-)
+find_package(PkgConfig REQUIRED)
+pkg_check_modules(FREETYPE REQUIRED IMPORTED_TARGET freetype2)
+pkg_check_modules(HARFBUZZ REQUIRED IMPORTED_TARGET harfbuzz)
+pkg_check_modules(FRIBIDI REQUIRED IMPORTED_TARGET fribidi)
+pkg_check_modules(PNG REQUIRED IMPORTED_TARGET libpng)
+pkg_check_modules(JPEG REQUIRED IMPORTED_TARGET libjpeg)
+pkg_check_modules(ZSTD REQUIRED IMPORTED_TARGET libzstd)
+pkg_check_modules(UNIBREAK REQUIRED IMPORTED_TARGET libunibreak)
+pkg_check_modules(FONTCONFIG REQUIRED IMPORTED_TARGET fontconfig)
+pkg_check_modules(XXHASH REQUIRED IMPORTED_TARGET libxxhash)
+find_package(ZLIB REQUIRED)
+find_library(INTL_LIBRARY intl)
 
 target_link_libraries(crbridge PRIVATE
     "${TP_DIR}/antiword/build/libantiword.a"
     "${TP_DIR}/chmlib/build/libchmlib.a"
-    freetype
-    harfbuzz
-    fribidi
-    png
-    jpeg
-    z
-    zstd
-    unibreak
-    intl
-    fontconfig
-    xxhash
+    PkgConfig::FREETYPE
+    PkgConfig::HARFBUZZ
+    PkgConfig::FRIBIDI
+    PkgConfig::PNG
+    PkgConfig::JPEG
+    PkgConfig::ZSTD
+    PkgConfig::UNIBREAK
+    PkgConfig::FONTCONFIG
+    PkgConfig::XXHASH
+    ZLIB::ZLIB
 )
+if(INTL_LIBRARY)
+    target_link_libraries(crbridge PRIVATE "${INTL_LIBRARY}")
+endif()

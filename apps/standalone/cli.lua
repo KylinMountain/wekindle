@@ -1,7 +1,7 @@
 #!/usr/bin/env luajit
 -- Wereader standalone CLI (Linux/macOS).
 --
--- Credentials: put your WeRead session into ~/.wereader/secrets.lua:
+-- Desktop-only bootstrap credentials may be put in ~/.wereader/secrets.lua:
 --   return { cookies = { wr_gid = "...", wr_vid = "..." }, api_key = "..." }
 -- (QR login will replace this once the LVGL UI lands.)
 --
@@ -34,6 +34,11 @@ end
 -- Merge credentials from secrets.lua if present (manual seeding until
 -- QR login exists).
 local function seed_secrets()
+    if os.getenv("WEREADER_PLATFORM") == "kindle" then
+        -- Kindle credentials must enter through QR login and ISecretStore.
+        -- Never load a plaintext seed from the USB-visible userstore.
+        return
+    end
     local path = app.data_dir .. "/secrets.lua"
     local file = io.open(path)
     if not file then
