@@ -309,6 +309,7 @@ local show_read_stats
 local show_mp_articles
 local begin_external_document
 local build_shelf_grid
+local begin_reading
 
 function show_shelf()
     local scr = L.lv_screen_active()
@@ -375,6 +376,17 @@ local function shelf_tick()
         app.settings:flush()
     end
     build_shelf_grid(scr)
+
+    -- debug hook: open a book immediately after the shelf renders
+    local auto_open = os.getenv("WEREADER_AUTO_OPEN")
+    if auto_open and auto_open ~= "" then
+        for i, book in ipairs(state.shelf_books) do
+            if auto_open == "1" or tostring(book.bookId) == auto_open then
+                open_book_record(book)
+                break
+            end
+        end
+    end
 end
 
 -- ------------------------------------------------ shelf grid + cover queue
@@ -386,10 +398,27 @@ local SHELF_MARGIN_X = 44
 local SHELF_COLS = 3
 local COVER_RATIO = 0.69
 
+local COVER_CANVAS_CAP = 30  -- ~4 MB of L8 pixels; the PW4 has 490 MB total
+
 local function cover_attach(bookId, gray, w, h)
     local entry = state.cover_cells and state.cover_cells[bookId]
     if not entry then
         return
+    end
+    -- evict the oldest cover canvas before exceeding the memory budget
+    state.cover_order = state.cover_order or {}
+    while #state.cover_order >= COVER_CANVAS_CAP do
+        local oldest = table.remove(state.cover_order, 1)
+        local old = state.cover_cells[oldest]
+        if old and old.canvas then
+            L.lv_obj_delete(old.canvas)
+            old.canvas = nil
+            state.cover_bufs[oldest] = nil
+            if old.placeholder then
+                L.lv_label_set_text(old.placeholder,
+                    tostring(old.title or ""))
+            end
+        end
     end
     local buf = ffi.new("unsigned char[?]", w * h)
     ffi.copy(buf, gray, w * h)
@@ -398,6 +427,8 @@ local function cover_attach(bookId, gray, w, h)
     L.lv_obj_set_pos(canvas,
         math.floor((entry.w - w) / 2), math.floor((entry.h - h) / 2))
     state.cover_bufs[bookId] = buf  -- keep the pixel buffer alive
+    entry.canvas = canvas
+    state.cover_order[#state.cover_order + 1] = bookId
     L.lv_label_set_text(entry.placeholder, "")
 end
 
@@ -449,6 +480,35 @@ function build_shelf_grid(scr)
     local cellh = coverh + titleh
     local rowgap = 36
 
+    -- ONE shared callback for every cell: LuaJIT caps the number of live
+    -- FFI callbacks (per-cell callbacks kill the app after a few shelf
+    -- rebuilds with "too many callbacks"). The cell index travels in
+    -- user_data instead. Tap = read immediately (like the official ink
+    -- app); long-press = book detail (cache/export/progress).
+    if not state.cell_cb then
+        state.cell_cb = ffi.cast("lv_event_cb_t", function(e)
+            -- LVGL still fires CLICKED on release after a long-press; the
+            -- long-press handler marks it so we don't open the reader too.
+            if state.long_press_consumed then
+                state.long_press_consumed = false
+                return
+            end
+            local ud = L.lv_event_get_user_data(e)
+            local index = tonumber(ffi.cast("intptr_t", ud))
+            if index and state.shelf_books[index] then
+                begin_reading(state.shelf_books[index])
+            end
+        end)
+        state.cell_long_cb = ffi.cast("lv_event_cb_t", function(e)
+            state.long_press_consumed = true
+            local ud = L.lv_event_get_user_data(e)
+            local index = tonumber(ffi.cast("intptr_t", ud))
+            if index and state.shelf_books[index] then
+                open_book(index)
+            end
+        end)
+    end
+
     for i, book in ipairs(state.shelf_books) do
         local col = (i - 1) % SHELF_COLS
         local row = math.floor((i - 1) / SHELF_COLS)
@@ -464,14 +524,11 @@ function build_shelf_grid(scr)
         L.lv_obj_set_scrollbar_mode(cell, lv.SCROLLBAR_MODE_OFF)
         L.lv_obj_remove_flag(cell, lv.FLAG_SCROLLABLE)
         L.lv_obj_add_flag(cell, lv.FLAG_CLICKABLE)
-        do
-            local index = i
-            local cb = ffi.cast("lv_event_cb_t", function()
-                open_book(index)
-            end)
-            state.cbs[#state.cbs + 1] = cb
-            L.lv_obj_add_event_cb(cell, cb, lv.EVENT_CLICKED, nil)
-        end
+        L.lv_obj_add_event_cb(cell, state.cell_cb, lv.EVENT_CLICKED,
+            ffi.cast("void*", ffi.cast("intptr_t", i)))
+        L.lv_obj_add_event_cb(cell, state.cell_long_cb,
+            lv.EVENT_LONG_PRESSED,
+            ffi.cast("void*", ffi.cast("intptr_t", i)))
 
         -- cover box (placeholder with title until the JPEG arrives)
         local box = L.lv_obj_create(cell)
@@ -500,13 +557,20 @@ function build_shelf_grid(scr)
             state.cover_cells[bookId] = {
                 box = box, placeholder = ph,
                 url = book.cover, w = cellw, h = coverh,
+                title = tostring(book.title or book.bookId),
+                row = row,
             }
             state.cover_queue[#state.cover_queue + 1] = bookId
         end
     end
+
+    state.grid_obj = grid
+    state.grid_row_h = cellh + rowgap
 end
 
 -- One cover per frame: cache file -> decode -> swap placeholder for canvas.
+-- The queue is re-ordered every tick so covers nearest the visible rows
+-- load first (the user can scroll deep before the tail is fetched).
 local function cover_tick()
     if state.screen ~= "shelf" then
         return
@@ -520,9 +584,39 @@ local function cover_tick()
         state.cover_queue = {}
         return
     end
-    local bookId = table.remove(queue, 1)
+    local pick = 1
+    local first_row, last_row
+    if state.grid_obj and state.grid_row_h then
+        local scroll_y = tonumber(L.lv_obj_get_scroll_y(state.grid_obj)) or 0
+        local grid_h = HEIGHT - 172
+        first_row = math.max(0, math.floor(scroll_y / state.grid_row_h) - 1)
+        last_row = math.ceil((scroll_y + grid_h) / state.grid_row_h) + 1
+        -- re-queue visible covers that were evicted by the memory cap
+        for bookId, entry in pairs(state.cover_cells) do
+            if not entry.canvas and not entry.queued and not entry.failed
+                and entry.row >= first_row and entry.row <= last_row then
+                entry.queued = true
+                queue[#queue + 1] = bookId
+            end
+        end
+        local best_dist = math.huge
+        for qi, bookId in ipairs(queue) do
+            local entry = state.cover_cells[bookId]
+            local row = entry and entry.row or first_row
+            local dist = row < first_row and (first_row - row)
+                or (row > last_row and (row - last_row) or 0)
+            if dist < best_dist then
+                best_dist = dist
+                pick = qi
+            end
+        end
+    end
+    local bookId = table.remove(queue, pick)
     local entry = state.cover_cells[bookId]
-    if not entry then
+    if entry then
+        entry.queued = false
+    end
+    if not entry or entry.canvas then
         return
     end
     local dir = app.data_dir .. "/covers"
@@ -539,7 +633,8 @@ local function cover_tick()
                 method = "GET", url = entry.url, timeout = 15 }
         end)
         if not ok or type(body) ~= "string" or code ~= 200 or #body < 100 then
-            return  -- keep the placeholder; do not requeue this session
+            entry.failed = true  -- no retry storms when scrolled into view
+            return
         end
         data = body
         local wf = io.open(path, "wb")
@@ -572,7 +667,7 @@ local function utf8_prefix(value, max_chars)
     return text
 end
 
-local function begin_reading(book)
+function begin_reading(book)
     state.book = book
     state.reader_session = nil
     state.pending_open = nil
@@ -1469,19 +1564,32 @@ show_toc = function(page)
         state.cjk_font_big)
     L.lv_obj_align(title, lv.ALIGN_TOP_MID, 0, 10)
 
+    -- shared callback + chapter index in user_data (FFI callback slots are
+    -- a scarce resource on LuaJIT)
+    if not state.toc_cb then
+        state.toc_cb = ffi.cast("lv_event_cb_t", function(e)
+            local s = state.reader_session
+            if not s then return end
+            local index = tonumber(ffi.cast("intptr_t",
+                L.lv_event_get_user_data(e)))
+            if index and s.chapters[index] then
+                state.screen = "reader"
+                handle_reader_action(s:jump_to_chapter(index))
+            end
+        end)
+    end
+
     local first = (page - 1) * per_page + 1
     local last = math.min(#session.chapters, first + per_page - 1)
     local y = 58
     for index = first, last do
-        local target_index = index
         local chapter = session.chapters[index]
         local prefix = index == session.chapter_index and "● " or ""
         local item = button(scr, prefix
             .. utf8_prefix(chapter.title or ("第 " .. index .. " 章"), 28),
-            function()
-                state.screen = "reader"
-                handle_reader_action(session:jump_to_chapter(target_index))
-            end, state.cjk_font)
+            nil, state.cjk_font)
+        L.lv_obj_add_event_cb(item, state.toc_cb, lv.EVENT_CLICKED,
+            ffi.cast("void*", ffi.cast("intptr_t", index)))
         L.lv_obj_set_size(item, WIDTH - 40, 42)
         L.lv_obj_set_pos(item, 20, y)
         y = y + 48

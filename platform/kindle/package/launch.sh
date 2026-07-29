@@ -90,6 +90,7 @@ export CR_FONT_PATH="$APP_DIR/share/fonts/NotoSansCJKsc-Regular.otf"
 # lands in the anonymous mcode area, faulting on small offsets like 0x31).
 # The heavy lifting is all in C (LVGL/crengine/libjpeg/libcurl), so running
 # the interpreter costs nothing measurable and is stable.
+ulimit -c unlimited 2>/dev/null || true
 "$APP_DIR/bin/luajit" -joff "$APP_DIR/app/app.lua" \
     >> "$LOG_DIR/wereader.log" 2>&1 || EXIT_CODE=$?
 

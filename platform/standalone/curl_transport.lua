@@ -197,7 +197,7 @@ function CurlTransport:roundtrip(req)
             C.curl_easy_setopt(curl, CURLOPT.HTTPHEADER, slist)
         end
 
-        io.stderr:write("[ct] performing...\n")
+        io.stderr:write("[ct] performing... ", tostring(req.method or "GET"), " ", url, "\n")
         local rc = C.curl_easy_perform(curl)
         io.stderr:write("[ct] performed rc=", tostring(rc), "\n")
         if rc ~= 0 then

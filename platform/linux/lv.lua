@@ -56,6 +56,8 @@ void lv_obj_set_size(lv_obj_t * obj, int32_t w, int32_t h);
 void lv_obj_center(lv_obj_t * obj);
 void lv_obj_align(lv_obj_t * obj, int align, int32_t x_ofs, int32_t y_ofs);
 void lv_obj_clean(lv_obj_t * obj);
+void lv_obj_delete(lv_obj_t * obj);
+int32_t lv_obj_get_scroll_y(lv_obj_t * obj);
 lv_obj_t * lv_obj_get_child(lv_obj_t * obj, int32_t idx);
 void lv_obj_add_event_cb(lv_obj_t * obj, lv_event_cb_t cb, int32_t code, void * user_data);
 int32_t lv_event_get_code(lv_event_t * e);
@@ -103,6 +105,8 @@ local lv = {
     EVENT_CLICKED = 7,
     EVENT_PRESSED = 1,
     EVENT_RELEASED = 8,
+    EVENT_SHORT_CLICKED = 4,
+    EVENT_LONG_PRESSED = 5,
     -- align (subset of lv_align_t)
     ALIGN_CENTER = 9,
     ALIGN_TOP_MID = 2,
