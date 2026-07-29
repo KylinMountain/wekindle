@@ -378,11 +378,22 @@ local function shelf_tick()
     build_shelf_grid(scr)
 
     -- debug hook: open a book immediately after the shelf renders
+    -- ("1"/bookId = detail page, "read"/"read:<bookId>" = straight to reader)
     local auto_open = os.getenv("WEREADER_AUTO_OPEN")
     if auto_open and auto_open ~= "" then
+        local mode, wanted = "detail", auto_open
+        if auto_open == "read" then
+            mode, wanted = "read", "1"
+        elseif auto_open:sub(1, 5) == "read:" then
+            mode, wanted = "read", auto_open:sub(6)
+        end
         for i, book in ipairs(state.shelf_books) do
-            if auto_open == "1" or tostring(book.bookId) == auto_open then
-                open_book_record(book)
+            if wanted == "1" or tostring(book.bookId) == wanted then
+                if mode == "read" then
+                    begin_reading(book)
+                else
+                    open_book_record(book)
+                end
                 break
             end
         end
@@ -576,7 +587,12 @@ end
 -- One cover per frame: cache file -> decode -> swap placeholder for canvas.
 -- The queue is re-ordered every tick so covers nearest the visible rows
 -- load first (the user can scroll deep before the tail is fetched).
+-- WEREADER_NO_COVERS=1 disables the pipeline entirely (debug isolation).
+local COVERS_DISABLED = os.getenv("WEREADER_NO_COVERS") == "1"
 local function cover_tick()
+    if COVERS_DISABLED then
+        return
+    end
     if state.screen ~= "shelf" then
         return
     end
@@ -1877,6 +1893,7 @@ local function load_tick()
         state.load_step = "done"
         local RB = require("reader_bridge")
         local layout = state.reader_session:layout()
+        io.stderr:write("[load] RB.open ", tostring(state.chapter_path), "\n")
         local ok = RB.open(state.chapter_path, {
             width = WIDTH,
             height = READER_TEXT_H,
@@ -1885,6 +1902,7 @@ local function load_tick()
             margin = layout.margin,
             font_face = os.getenv("CR_FONT_FACE") or "Heiti SC",
         })
+        io.stderr:write("[load] RB.open -> ", tostring(ok), "\n")
         if not ok then
             load_fail("章节无法打开（文件可能损坏）")
             return
@@ -1975,6 +1993,10 @@ local function lifecycle_tick()
         foreground_time:discard_unobserved_gap()
         if app.device and state.backend and state.backend.resume then
             pcall(state.backend.resume, state.backend)
+            -- the fb may hold a screensaver/stale image; force a full
+            -- LVGL re-render before flashing, or the user wakes to garbage
+            L.lv_obj_invalidate(L.lv_screen_active())
+            L.lv_refr_now(state.backend.display)
             if state.backend.full_refresh then
                 pcall(state.backend.full_refresh, state.backend)
             end
@@ -2002,6 +2024,8 @@ local function lifecycle_tick()
         if state.backend and state.backend.resume then
             pcall(state.backend.resume, state.backend)
         end
+        L.lv_obj_invalidate(L.lv_screen_active())
+        L.lv_refr_now(state.backend.display)
         if state.backend and state.backend.full_refresh then
             pcall(state.backend.full_refresh, state.backend)
         end
