@@ -89,7 +89,11 @@ cp /tmp/lvgl-khf-build/libwereader_kindledisplay.so "$STAGE/lib/"
 TP="$REPO/third_party/src/coolreader/thirdparty_unman"
 if [ ! -f /tmp/antiword-hf-build/libantiword.a ]; then
     echo "== antiword"
-    xcmake "$TP/antiword" /tmp/antiword-hf-build -DCR3_ANTIWORD_PATCH=1
+    # CMAKE_C_FLAGS carries the macro because the antiword CMakeLists only
+    # maps CR3_ANTIWORD_PATCH to ANTIWORD_EXTERNAL_IO; see
+    # reader/crengine_bridge/CMakeLists.txt for why the macro is mandatory.
+    xcmake "$TP/antiword" /tmp/antiword-hf-build -DCR3_ANTIWORD_PATCH=1 \
+        -DCMAKE_C_FLAGS="--target=arm-linux-gnueabihf --sysroot=$XSYSROOT -B$XGCCDIR -L$XGCCDIR -DCR3_ANTIWORD_PATCH=1"
     cmake --build /tmp/antiword-hf-build -j8 > /dev/null
     cd /tmp/antiword-hf-build
     mkdir -p objfix && cd objfix

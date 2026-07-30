@@ -55,6 +55,17 @@ set(CRE_SOURCES
 )
 list(TRANSFORM CRE_SOURCES PREPEND "${CRE_DIR}/")
 
+# CR3_ANTIWORD_PATCH=1 is REQUIRED (koreader-crengine/CMakeLists.txt:221 does
+# the same): without it, antiword.h maps aw_rewind/aw_getc onto libc
+# rewind/getc, wordfmt.cpp's wrapper gets exported as a plain "rewind"
+# symbol, and whether antiword's format sniffers hit the wrapper or real
+# libc rewind depends on ELF load order. When libcrbridge is dlopen'd after
+# libc (the app, via LuaJIT FFI) the sniffers call libc rewind() on the fake
+# AntiwordStreamGuard FILE* — heap garbage as a FILE — and crash (arm32).
+# With the macro, aw_rewind/aw_getc stay unique names that always resolve
+# to the wrappers regardless of load order.
+add_definitions(-DCR3_ANTIWORD_PATCH=1)
+
 add_library(crbridge SHARED cr_bridge.cpp ${CRE_SOURCES})
 add_executable(cr_test cr_test.cpp)
 target_link_libraries(cr_test PRIVATE crbridge)
