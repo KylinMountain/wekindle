@@ -14,12 +14,18 @@
 
 #ifdef WEREADER_CRASH_HANDLER
 #include <csignal>
+#include <cstddef>
 #include <execinfo.h>
 #include <unistd.h>
-static void cr_crash_handler(int sig) {
+#include <ucontext.h>
+static void cr_crash_handler(int sig, siginfo_t *info, void *uctx) {
+    ucontext_t *uc = (ucontext_t *)uctx;
     void *frames[48];
     int n = backtrace(frames, 48);
-    fprintf(stderr, "\n[crbridge] signal %d caught, backtrace:\n", sig);
+    fprintf(stderr,
+        "\n[crbridge] signal %d fault_addr=%p pc=%p lr=%p, backtrace:\n",
+        sig, info ? info->si_addr : nullptr,
+        (void *)uc->uc_mcontext.arm_pc, (void *)uc->uc_mcontext.arm_lr);
     backtrace_symbols_fd(frames, n, STDERR_FILENO);
     fsync(STDERR_FILENO);
     signal(sig, SIG_DFL);
@@ -43,9 +49,13 @@ void cr_close(void);
 // CJK-capable fonts are available. Returns the registered font count.
 int cr_init(const char *font_dir) {
 #ifdef WEREADER_CRASH_HANDLER
-    signal(SIGSEGV, cr_crash_handler);
-    signal(SIGBUS, cr_crash_handler);
-    signal(SIGABRT, cr_crash_handler);
+    struct sigaction sa;
+    memset(&sa, 0, sizeof(sa));
+    sa.sa_sigaction = cr_crash_handler;
+    sa.sa_flags = SA_SIGINFO | SA_RESETHAND;
+    sigaction(SIGSEGV, &sa, nullptr);
+    sigaction(SIGBUS, &sa, nullptr);
+    sigaction(SIGABRT, &sa, nullptr);
 #endif
     InitFontManager(lString8());
     LVContainerRef dir = LVOpenDirectory(lString8(font_dir), U"*.*");
@@ -71,16 +81,19 @@ int cr_init(const char *font_dir) {
 int cr_open_layout(const char *path, int width, int height, int font_size,
                    int line_spacing, int margin, const char *font_face) {
     cr_close();
+    fprintf(stderr, "[crb] new LVDocView\n");
     CrDoc *doc = new CrDoc();
     doc->view = new LVDocView(32, true);  // noDefaultDocument
     doc->width = width;
     doc->height = height;
     doc->view->setFontSize(font_size);
+    fprintf(stderr, "[crb] LoadDocument %s\n", path);
     if (!doc->view->LoadDocument(path)) {
         delete doc->view;
         delete doc;
         return 0;
     }
+    fprintf(stderr, "[crb] setters\n");
     doc->view->setFontSize(font_size);
     if (line_spacing < 90) line_spacing = 90;
     if (line_spacing > 180) line_spacing = 180;
@@ -96,7 +109,9 @@ int cr_open_layout(const char *path, int width, int height, int font_size,
         // otherwise headings/styles that request other families render "?".
         fontMan->SetFallbackFontFaces(lString8(font_face));
     }
+    fprintf(stderr, "[crb] Render %dx%d\n", width, height);
     doc->view->Render(width, height);
+    fprintf(stderr, "[crb] done\n");
     g_doc = doc;
     return 1;
 }
